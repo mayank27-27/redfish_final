@@ -132,7 +132,7 @@ def _build_ssl_context(verify: bool, legacy_fallback: bool) -> ssl.SSLContext:
 
 logger = logging.getLogger(__name__)
 
-SESSION_SERVICE_PATH = "/redfish/v1/SessionService/Sessions"
+SESSION_SERVICE_PATH = "/redfish/v1/SessionService/Sessions/"
 DEFAULT_ASSUMED_SESSION_TTL_MINUTES = 30  # most BMCs default to 30 min idle timeout
 
 
@@ -260,6 +260,7 @@ class RedfishSession:
         with self._lock:
             self.token = None
             self.expires_at = None
+            self.uses_basic_auth_fallback = False
             if self._client is not None:
                 self._client.close()
                 self._client = None
@@ -453,7 +454,7 @@ class RedfishSession:
                     timeout=self.config.REDFISH_HTTP_TIMEOUT,
                     follow_redirects=True,
                 ) as client:
-                    resp = client.get("/redfish/v1/")
+                    resp = client.get("/redfish/v1/Systems")
                 break
             except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPError) as exc:
                 formatted = format_httpx_exception(exc)

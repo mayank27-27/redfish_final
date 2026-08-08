@@ -116,6 +116,10 @@ class PollingEngine:
             for server in servers:
                 last = server.last_poll_attempt
                 interval = server.polling_interval_seconds or self.config["DEFAULT_POLLING_INTERVAL_SECONDS"]
+                # Back off AUTH_FAILED servers to 5 minutes to avoid hammering
+                # the BMC with repeated failing authentication attempts.
+                if server.connection_status == ConnectionStatus.AUTH_FAILED:
+                    interval = max(interval, 300)
                 if last and (now - last).total_seconds() < interval:
                     continue
                 
@@ -170,6 +174,14 @@ class PollingEngine:
         db.session.commit()
 
         # Decrypt BMC password. Provide a clear error if the key is wrong.
+        if not server.password_encrypted:
+            server.connection_status = ConnectionStatus.AUTH_FAILED
+            server.last_poll_error = "No password stored for this server."
+            db.session.add(server)
+            db.session.commit()
+            ws_events.emit_server_summary_update(self.socketio, server.to_summary_dict())
+            return
+
         cipher = get_cipher(self.config)
         try:
             password = cipher.decrypt(server.password_encrypted)

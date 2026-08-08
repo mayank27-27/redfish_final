@@ -1077,7 +1077,7 @@ function buildPropGrid(obj, prefix = "", skipTopLevelKeys = DEFAULT_SKIP_TOP_LEV
 
     const pathParts = path.split(".");
     const lastPart = pathParts[pathParts.length - 1];
-    if (lastPart && (lastPart.includes("@odata") || lastPart === "Links" || lastPart === "Actions")) {
+    if (lastPart && (lastPart.includes("@odata") || lastPart.includes("@Redfish.Deprecated") || lastPart === "Links" || lastPart === "Actions")) {
       return;
     }
 
@@ -1094,7 +1094,7 @@ function buildPropGrid(obj, prefix = "", skipTopLevelKeys = DEFAULT_SKIP_TOP_LEV
     if (typeof value === "object") {
       const keys = Object.keys(value).filter((k) => {
         if (!path && skipTopLevelKeys.has(k)) return false;
-        if (k.includes("@odata") || k === "Links" || k === "Actions") return false;
+        if (k.includes("@odata") || k.includes("@Redfish.Deprecated") || k === "Links" || k === "Actions") return false;
         return true;
       });
       if (keys.length === 0) {
@@ -1128,7 +1128,7 @@ function buildPropGrid(obj, prefix = "", skipTopLevelKeys = DEFAULT_SKIP_TOP_LEV
     const v = document.createElement("div");
     v.className = "v";
     if (isEmpty) {
-      v.innerHTML = `<span class="v-raw">${escapeHtml(value)}</span><span class="v-empty-note">Not provided by this BMC</span>`;
+      v.innerHTML = `<span class="v-empty-note">Not provided by this BMC</span>`;
     } else {
       v.textContent = value;
     }

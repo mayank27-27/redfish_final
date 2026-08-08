@@ -41,7 +41,7 @@ def _build_client_for(server):
         )
 
     cipher = get_cipher(engine.config)
-    password = cipher.decrypt(server.password_encrypted)
+    password = cipher.decrypt(server.password_encrypted) if server.password_encrypted else ""
     base_url = f"https://{server.ip_address}"
 
     redfish_session = engine.session_manager.get_session(

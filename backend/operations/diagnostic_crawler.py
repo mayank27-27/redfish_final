@@ -112,6 +112,9 @@ def run():
         servers = Server.query.all()
         
         for s in servers:
+            if not s.password_encrypted:
+                print(f"Skipping {s.hostname} — agent-managed (no stored password)")
+                continue
             pw = cipher.decrypt(s.password_encrypted)
             base_url = f"https://{s.ip_address}"
             print(f"\n======================================")

@@ -271,8 +271,15 @@ def _register_routes(app: Flask, socketio: SocketIO):
     @app.route("/api/servers/<server_id>", methods=["DELETE"])
     def delete_server(server_id):
         server = _get_server_or_404(server_id)
+        server_db_id = server.id
         db.session.delete(server)
         db.session.commit()
+        try:
+            from scheduler.poller import _polling_engine_instance
+            if _polling_engine_instance:
+                _polling_engine_instance.session_manager.drop_session(server_db_id)
+        except Exception:
+            pass
         return "", 204
 
     @app.route("/api/servers/<server_id>/poll-now", methods=["POST"])
@@ -285,6 +292,8 @@ def _register_routes(app: Flask, socketio: SocketIO):
     @app.route("/api/servers/<server_id>/diagnostics/support-bundle", methods=["POST"])
     def start_support_bundle(server_id):
         server = _get_server_or_404(server_id)
+        if server.agent_id is not None:
+            return jsonify({"error": "Diagnostics operations are not supported for agent-managed servers"}), 400
         try:
             operation = operation_service.create_operation(
                 server.id, "support_bundle", server.vendor,

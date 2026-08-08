@@ -85,6 +85,8 @@ class RedfishClient:
                     # out). Force re-authentication and retry once.
                     logger.info("401 from %s on %s - reauthenticating", self.session.base_url, path)
                     self.session.invalidate()
+                    if self.session.uses_basic_auth_fallback:
+                        raise RedfishAuthError(f"Basic auth rejected by {self.session.base_url}")
                     continue
 
                 if resp.status_code >= 500:
@@ -172,6 +174,8 @@ class RedfishClient:
                 if resp.status_code == 401:
                     logger.info("401 from %s on %s - reauthenticating", self.session.base_url, path)
                     self.session.invalidate()
+                    if self.session.uses_basic_auth_fallback:
+                        raise RedfishAuthError(f"Basic auth rejected by {self.session.base_url}")
                     continue
 
                 if resp.status_code == 501:
