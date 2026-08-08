@@ -45,6 +45,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 from flask import Flask, jsonify, request, abort, render_template, send_file
+from flask_migrate import Migrate
 from flask_socketio import SocketIO
 
 from config import build_app_config
@@ -111,6 +112,9 @@ def create_app() -> tuple[Flask, SocketIO]:
     # SQLAlchemy
     db.init_app(app)
 
+    # Database migrations (Alembic via Flask-Migrate)
+    Migrate(app, db)
+
     # SocketIO
     socketio = SocketIO(
         app,
@@ -127,12 +131,25 @@ def create_app() -> tuple[Flask, SocketIO]:
     # Register REST routes
     _register_routes(app, socketio)
 
-    # Create DB tables
+    # Note: database tables are now managed by Flask-Migrate (Alembic).
+    # Run 'flask db upgrade' to create/migrate tables.
+    # The startup.sh script handles this automatically in Docker.
     with app.app_context():
-        db.create_all()
         operation_service.reconcile_orphaned_operations()
 
     return app, socketio
+
+
+def create_flask_app() -> Flask:
+    """Factory for Flask CLI commands (flask db migrate, flask db upgrade, etc.).
+
+    Flask's CLI expects a callable that returns a Flask instance (not a tuple),
+    so this wraps create_app() and discards the SocketIO object.
+
+    Usage:  FLASK_APP=app:create_flask_app flask db upgrade
+    """
+    app, _ = create_app()
+    return app
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -12,8 +12,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Flask CLI needs this to discover the app factory for migration commands
+# (e.g., docker compose run --rm app flask db migrate -m "add column")
+ENV FLASK_APP=wsgi
+
 EXPOSE 5000
 
-# Run via a wrapper that calls eventlet.monkey_patch() first,
-# before any other imports. This eliminates the greenlet patching warning.
-CMD ["python", "-c", "import eventlet; eventlet.monkey_patch(); exec(open('app.py').read())"]
+# startup.sh: auto-runs pending migrations, then starts the app
+RUN chmod +x startup.sh
+CMD ["bash", "startup.sh"]

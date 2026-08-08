@@ -97,9 +97,14 @@ def mark_failed(operation_id: int, error_message: str):
 
 
 def reconcile_orphaned_operations():
-    orphaned = Operation.query.filter(
-        Operation.status.in_([OperationStatus.QUEUED, OperationStatus.RUNNING])
-    ).all()
+    try:
+        orphaned = Operation.query.filter(
+            Operation.status.in_([OperationStatus.QUEUED, OperationStatus.RUNNING])
+        ).all()
+    except Exception:
+        # Table may not exist yet (fresh DB before migrations)
+        db.session.rollback()
+        return
     for op in orphaned:
         op.status = OperationStatus.FAILED
         op.error_message = "Interrupted by application restart"
