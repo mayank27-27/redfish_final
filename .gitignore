@@ -85,3 +85,13 @@ logs/
 # Temporary files
 *.tmp
 *.bak
+backend/agent_config.json
+backend/agent_queue.db
+backend/agent_queue.db-shm
+backend/agent_queue.db-wal
+backend/test_msa.py
+backend/agent_config.json
+backend/agent_queue.db
+backend/agent_queue.db-shm
+backend/agent_queue.db-wal
+backend/test_msa.py

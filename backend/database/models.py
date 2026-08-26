@@ -119,6 +119,12 @@ class ComponentCategory(str, enum.Enum):
     FIRMWARE          = "firmware"
     SECURITY          = "security"
 
+    #storage devices
+    STORAGE_DEVICE_DISK       = "storage_device_disk"
+    STORAGE_DEVICE_CONTROLLER = "storage_device_controller"
+    STORAGE_DEVICE_PORT       = "storage_device_port"
+    STORAGE_DEVICE_ENCLOSURE  = "storage_device_enclosure"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Site & Agent
@@ -500,4 +506,118 @@ class Alert(db.Model):
             "first_occurred_at": self.first_occurred_at.isoformat() if self.first_occurred_at else None,
             "last_occurred_at": self.last_occurred_at.isoformat() if self.last_occurred_at else None,
             "resolved_at": self.resolved_at.isoformat() if self.resolved_at else None,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# StorageDevice — standalone storage arrays (HPE MSA etc), NOT server BMCs.
+# No OS/power-state concept here, just an array with its own management IP.
+# ─────────────────────────────────────────────────────────────────────────────
+class StorageDevice(db.Model):
+    __tablename__ = "storage_devices"
+
+    id = Column(
+        _UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
+        doc="Stable identifier; never recycled even if the device is re-added.",
+    )
+
+    hostname        = Column(String(255), nullable=False)
+    display_name    = Column(String(255))
+    ip_address      = Column(String(64), nullable=False, unique=True)
+    vendor          = Column(String(128))
+    model           = Column(String(128))
+    serial_number   = Column(String(128))
+    firmware_version= Column(String(128))
+
+    username           = Column(String(128), nullable=True)
+    password_encrypted = Column(Text, nullable=True)
+
+    polling_interval_seconds = Column(Integer, default=30)
+    enabled                  = Column(Boolean, default=True, nullable=False)
+
+    connection_status  = Column(
+        Enum(ConnectionStatus, name="storage_connection_status_enum"),
+        default=ConnectionStatus.UNKNOWN,
+    )
+    health_status       = Column(String(32))
+    last_poll_attempt    = Column(DateTime)
+    last_successful_poll = Column(DateTime)
+    last_poll_error      = Column(Text)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    components       = relationship("StorageComponent", back_populates="storage_device", cascade="all, delete-orphan")
+    sensor_readings  = relationship("StorageSensorReading", back_populates="storage_device", cascade="all, delete-orphan")
+
+    def to_dict(self):
+        return {
+            "id": str(self.id),
+            "hostname": self.hostname,
+            "display_name": self.display_name,
+            "ip_address": self.ip_address,
+            "vendor": self.vendor,
+            "model": self.model,
+            "serial_number": self.serial_number,
+            "firmware_version": self.firmware_version,
+            "polling_interval_seconds": self.polling_interval_seconds,
+            "enabled": self.enabled,
+            "connection_status": self.connection_status.value if self.connection_status else None,
+            "health_status": self.health_status,
+            "last_poll_attempt": self.last_poll_attempt.isoformat() if self.last_poll_attempt else None,
+            "last_successful_poll": self.last_successful_poll.isoformat() if self.last_successful_poll else None,
+            "last_poll_error": self.last_poll_error,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class StorageComponent(db.Model):
+    """One row per discoverable MSA component (disk, controller, port,
+    enclosure). Upserted on every poll cycle, same pattern as Component."""
+    __tablename__ = "storage_components"
+    __table_args__ = (
+        UniqueConstraint("storage_device_id", "category", "odata_id", name="uq_storage_component_identity"),
+    )
+
+    id = Column(
+        _UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    storage_device_id = Column(
+        _UUID(as_uuid=True), ForeignKey("storage_devices.id", ondelete="CASCADE"), nullable=False, index=True)
+    category    = Column(String(64), nullable=False, index=True)   # ComponentCategory value
+    odata_id    = Column(String(512), nullable=False)              # MSA "durable-id" - stable identity, named
+                                                                     # odata_id purely so the existing frontend
+                                                                     # component-row rendering code works unchanged
+    name        = Column(String(255))
+    health      = Column(String(32))
+    state       = Column(String(64))
+    location    = Column(String(255))
+    raw_json    = Column(_JSONB_or_JSON())     # full parsed MSA OBJECT dict
+    last_updated_at = Column(DateTime, default=datetime.utcnow)
+
+    storage_device = relationship("StorageDevice", back_populates="components")
+
+
+class StorageSensorReading(db.Model):
+    """Append-only. One row per numeric reading per poll cycle. Pruned by
+    the same scheduler job pattern as SensorReading."""
+    __tablename__ = "storage_sensor_readings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    storage_device_id = Column(
+        _UUID(as_uuid=True), ForeignKey("storage_devices.id", ondelete="CASCADE"), nullable=False, index=True)
+    metric      = Column(String(64), nullable=False, index=True)
+    source_name = Column(String(255))
+    value       = Column(Float, nullable=False)
+    unit        = Column(String(32))
+    recorded_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+    storage_device = relationship("StorageDevice", back_populates="sensor_readings")
+
+    def to_dict(self):
+        return {
+            "metric": self.metric,
+            "source_name": self.source_name,
+            "value": self.value,
+            "unit": self.unit,
+            "recorded_at": self.recorded_at.isoformat() if self.recorded_at else None,
         }

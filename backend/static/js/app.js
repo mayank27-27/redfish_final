@@ -158,6 +158,8 @@ let state = {
   view: "overview",                  // 'overview' | 'nodes' | 'alerts' | 'server'
   nodesFilter: { search: "", tab: "all" },
   alertsFilter: "all",               // 'all' | 'critical' | 'warning' | 'info'
+  storageDevices: [],
+  selectedStorageDeviceId: null,
 };
 
 const SEVERITY_ORDER = ["critical", "warning", "info"];
@@ -337,6 +339,7 @@ function setView(view) {
   if (view === "overview") renderOverviewView();
   else if (view === "nodes") renderNodesView();
   else if (view === "alerts") renderAlertsView();
+  else if (view === "storage-devices") renderStorageDevicesView();
 }
 
 function wireNav() {
@@ -545,6 +548,173 @@ function updateNodesTable() {
     row.addEventListener("click", () => selectServer(s.id));
     body.appendChild(row);
   }
+}
+
+// ---------------------------------------------------------------------
+// Storage Devices (standalone arrays - HPE MSA etc, not server BMCs)
+// ---------------------------------------------------------------------
+async function loadStorageDevices() {
+  state.storageDevices = await api("/api/storage-devices");
+  const countEl = $("#navStorageDeviceCount");
+  if (countEl) countEl.textContent = state.storageDevices.length || "";
+  if (state.view === "storage-devices" && !state.selectedStorageDeviceId) updateStorageDevicesTable();
+}
+
+function renderStorageDevicesView() {
+  const main = $("#main");
+  main.innerHTML = `
+    <div class="view-header">
+      <div>
+        <h1>Storage Devices</h1>
+        <div class="sub" id="storageDevicesSubCount"></div>
+      </div>
+      <button class="btn-primary" id="addStorageDeviceBtn"><i class="fa-solid fa-plus"></i> Add storage device</button>
+    </div>
+    <div class="nodes-toolbar">
+      <input type="text" id="storageDeviceSearch" placeholder="Search by name or IP address..." autocomplete="off">
+    </div>
+    <div class="nodes-table">
+      <div class="nodes-table-head">
+        <span>Status</span><span>Node</span><span>Vendor / Model</span>
+        <span></span><span>Connection</span><span>Last Updated</span>
+      </div>
+      <div id="storageDevicesTableBody"></div>
+    </div>
+  `;
+  $("#addStorageDeviceBtn").addEventListener("click", () => openAddStorageDeviceModal());
+  $("#storageDeviceSearch").addEventListener("input", () => updateStorageDevicesTable());
+  updateStorageDevicesTable();
+}
+
+function updateStorageDevicesTable() {
+  if (state.view !== "storage-devices") return;
+  const search = ($("#storageDeviceSearch")?.value || "").toLowerCase();
+  const filtered = state.storageDevices.filter((d) =>
+    ((d.display_name || d.hostname || "") + " " + (d.ip_address || "")).toLowerCase().includes(search)
+  );
+
+  $("#storageDevicesSubCount").textContent = `${filtered.length} of ${state.storageDevices.length} devices shown`;
+
+  const body = $("#storageDevicesTableBody");
+  if (filtered.length === 0) {
+    body.innerHTML = `<div class="sidebar-empty">No storage devices ${state.storageDevices.length ? "match your search" : 'yet. Click "Add storage device" to add one.'}</div>`;
+    return;
+  }
+  body.innerHTML = "";
+  for (const d of filtered) {
+    const row = document.createElement("div");
+    row.className = "node-row";
+    row.innerHTML = `
+      <div class="status-cell">
+        <span class="health-dot" style="background:${healthDotColor(d.health_status)};width:8px;height:8px;border-radius:50%;display:inline-block;"></span>
+        ${escapeHtml(d.health_status || "Unknown")}
+      </div>
+      <div class="name-cell">
+        <div class="name">${escapeHtml(d.display_name || d.hostname)}</div>
+        <div class="ip">${escapeHtml(d.ip_address)}</div>
+      </div>
+      <div class="vendor-cell">${escapeHtml(d.vendor || "Unknown")} ${escapeHtml(d.model || "")}</div>
+      <div></div>
+      <div class="conn-cell"><span class="pill ${d.connection_status === 'connected' ? 'pill-ok' : 'pill-crit'}"><span class="dot" style="background:${connDotColor(d.connection_status)}"></span>${formatConnectionStatus(d.connection_status)}</span></div>
+      <div class="updated-cell">${d.last_successful_poll ? timeAgoOrLocal(d.last_successful_poll) : "never"}</div>
+    `;
+    row.addEventListener("click", () => selectStorageDevice(d.id));
+    body.appendChild(row);
+  }
+}
+
+async function selectStorageDevice(deviceId) {
+  state.selectedStorageDeviceId = deviceId;
+  state.view = "storage-device-detail";
+  await renderStorageDeviceDetail();
+}
+
+async function renderStorageDeviceDetail() {
+  const main = $("#main");
+  const device = await api(`/api/storage-devices/${state.selectedStorageDeviceId}`);
+  const componentsByCategory = await api(`/api/storage-devices/${state.selectedStorageDeviceId}/components`);
+
+  main.innerHTML = `
+    <div class="back-link" id="backToStorageDevicesLink"><i class="fa-solid fa-arrow-left"></i> Back to Storage Devices</div>
+    <div class="server-header" id="storageDeviceHeader"></div>
+    <div class="cards-grid" id="storageDeviceCardsGrid"></div>
+  `;
+  $("#backToStorageDevicesLink").addEventListener("click", () => {
+    state.selectedStorageDeviceId = null;
+    setView("storage-devices");
+  });
+
+  const header = $("#storageDeviceHeader");
+  header.innerHTML = `
+    <div class="server-header-top">
+      <div>
+        <h1>${escapeHtml(device.display_name || device.hostname)}</h1>
+        <div class="sub">${escapeHtml(device.ip_address)} &middot; ${escapeHtml(device.vendor || "unknown vendor")} ${escapeHtml(device.model || "")}</div>
+      </div>
+      <span class="pill ${healthClass(device.health_status)}"><span class="dot" style="background:${healthDotColor(device.health_status)}"></span>${device.health_status || "Unknown"}</span>
+      <span class="pill ${device.connection_status === 'connected' ? 'pill-ok' : 'pill-crit'}"><span class="dot" style="background:${connDotColor(device.connection_status)}"></span>${formatConnectionStatus(device.connection_status)}</span>
+    </div>
+    <div class="header-stats">
+      <div class="stat"><div class="label">Firmware</div><div class="value">${escapeHtml(device.firmware_version || "-")}</div></div>
+      <div class="stat"><div class="label">Serial Number</div><div class="value">${escapeHtml(device.serial_number || "-")}</div></div>
+      <div class="stat"><div class="label">Device ID</div><div class="value" style="font-family:monospace;">${device.id}</div></div>
+      <div class="stat"><div class="label">Last Updated</div><div class="value">${device.last_successful_poll ? timeAgoOrLocal(device.last_successful_poll) : "never"}</div></div>
+    </div>
+  `;
+
+    const STORAGE_CATEGORY_META = {
+    storage_device_disk:       { icon: "fa-hard-drive", label: "Disks" },
+    storage_device_controller: { icon: "fa-microchip",  label: "Controllers" },
+    storage_device_power:      { icon: "fa-plug",        label: "Power" },
+    storage_device_fan:        { icon: "fa-fan",         label: "Fans" },
+    storage_device_port:       { icon: "fa-ethernet",   label: "Ports" },
+    storage_device_enclosure:  { icon: "fa-server",     label: "Enclosure" },
+  };
+
+  const grid = $("#storageDeviceCardsGrid");
+  grid.innerHTML = "";
+  for (const [category, meta] of Object.entries(STORAGE_CATEGORY_META)) {
+    const comps = componentsByCategory[category] || [];
+    const card = document.createElement("div");
+    card.className = "card";
+    const worst = worstHealth(comps);
+    card.innerHTML = `
+      <div class="card-header">
+        <i class="fa-solid ${meta.icon} icon"></i>
+        <span class="title">${meta.label}</span>
+        ${worst ? `<span class="dot" style="width:8px;height:8px;border-radius:50%;background:${healthDotColor(worst)}"></span>` : ""}
+        <span class="count">${comps.length || "–"}</span>
+        <i class="fa-solid fa-chevron-right chevron"></i>
+      </div>
+    `;
+    card.querySelector(".card-header").addEventListener("click", () => openStorageCategoryModal(category, meta, comps));
+    grid.appendChild(card);
+  }
+}
+
+function openStorageCategoryModal(category, meta, comps) {
+  state.openCategoryModal = category;
+  $("#categoryModalIcon").className = `fa-solid ${meta.icon}`;
+  $("#categoryModalTitle").textContent = meta.label;
+  $("#categoryModalCount").textContent = comps.length ? `${comps.length} item${comps.length === 1 ? "" : "s"}` : "";
+  renderCategoryBody($("#categoryModalBody"), category, comps);
+  $("#categoryModalOverlay").classList.add("open");
+}
+
+function openAddStorageDeviceModal() {
+  const hostname = prompt("Hostname / display name:");
+  if (!hostname) return;
+  const ip_address = prompt("IP address:");
+  if (!ip_address) return;
+  const username = prompt("Username:");
+  const password = prompt("Password:");
+  api("/api/storage-devices", {
+    method: "POST",
+    body: JSON.stringify({ hostname, ip_address, username, password }),
+  }).then(() => {
+    loadStorageDevices();
+    updateStorageDevicesTable();
+  }).catch((e) => toast(`Failed to add storage device: ${e.message || e}`));
 }
 
 function timeAgoOrLocal(isoString) {
@@ -1618,6 +1788,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   await loadServers();
   await loadAlerts();
+  await loadStorageDevices();
   setView("overview");
   setInterval(loadAlerts, 30000);
 });

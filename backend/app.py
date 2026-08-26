@@ -33,6 +33,12 @@ POST /api/alerts/<id>/acknowledge
 POST /api/alerts/<id>/resolve
 POST /api/redfish/webhook                  Redfish EventService inbound
 GET  /api/health                           health check
+GET  /api/storage-devices                  list storage arrays (MSA etc)
+POST /api/storage-devices                  add storage array
+GET  /api/storage-devices/<id>             storage array detail
+DELETE /api/storage-devices/<id>           remove storage array
+GET  /api/storage-devices/<id>/components  hardware state grouped by category
+POST /api/storage-devices/<id>/poll-now    immediate poll (not yet implemented)
 """
 # ── CRITICAL: load .env into os.environ BEFORE anything reads env vars ──────
 # This must be the FIRST executable code in the file.
@@ -51,7 +57,7 @@ from config import build_app_config
 from database import db
 from database.models import (
     Server, Component, SensorReading, LogEntry, Alert,
-    ConnectionStatus, Agent, Site
+    ConnectionStatus, Agent, Site, StorageDevice, StorageComponent
 )
 from auth.credentials import get_cipher
 from websocket import events as ws_events
@@ -504,6 +510,76 @@ def _register_routes(app: Flask, socketio: SocketIO):
 
         return jsonify({"status": "ok"}), 200
 
+    # ── Storage Devices (standalone arrays - HPE MSA etc, not server BMCs) ──
+    @app.route("/api/storage-devices", methods=["GET"])
+    def list_storage_devices():
+        devices = StorageDevice.query.order_by(StorageDevice.hostname).all()
+        return jsonify([d.to_dict() for d in devices])
+
+    @app.route("/api/storage-devices", methods=["POST"])
+    def add_storage_device():
+        data = request.get_json(force=True) or {}
+        for field in ("hostname", "ip_address", "username", "password"):
+            if not data.get(field):
+                return jsonify({"error": f"'{field}' is required"}), 400
+
+        if StorageDevice.query.filter_by(ip_address=data["ip_address"]).first():
+            return jsonify({"error": "A storage device with this IP address already exists"}), 409
+
+        cipher = get_cipher(app.config)
+        device = StorageDevice(
+            hostname=data["hostname"],
+            display_name=data.get("display_name") or data["hostname"],
+            ip_address=data["ip_address"],
+            username=data.get("username"),
+            password_encrypted=cipher.encrypt(data["password"]) if data.get("password") else None,
+            polling_interval_seconds=int(data.get("polling_interval_seconds") or 30),
+            enabled=True,
+        )
+        db.session.add(device)
+        db.session.commit()
+        return jsonify(device.to_dict()), 201
+
+    @app.route("/api/storage-devices/<device_id>", methods=["GET"])
+    def get_storage_device(device_id):
+        device = db.session.get(StorageDevice, device_id)
+        if not device:
+            abort(404, description=f"Storage device {device_id} not found")
+        return jsonify(device.to_dict())
+
+    @app.route("/api/storage-devices/<device_id>", methods=["DELETE"])
+    def delete_storage_device(device_id):
+        device = db.session.get(StorageDevice, device_id)
+        if not device:
+            abort(404, description=f"Storage device {device_id} not found")
+        db.session.delete(device)
+        db.session.commit()
+        return "", 204
+
+    @app.route("/api/storage-devices/<device_id>/components", methods=["GET"])
+    def get_storage_device_components(device_id):
+        device = db.session.get(StorageDevice, device_id)
+        if not device:
+            abort(404, description=f"Storage device {device_id} not found")
+        comps = StorageComponent.query.filter_by(storage_device_id=device_id).all()
+        grouped: dict[str, list] = defaultdict(list)
+        for c in comps:
+            grouped[c.category].append({
+                "odata_id": c.odata_id, "name": c.name, "health": c.health,
+                "state": c.state, "location": c.location, "properties": c.raw_json,
+            })
+        return jsonify(grouped)
+
+    @app.route("/api/storage-devices/<device_id>/poll-now", methods=["POST"])
+    def poll_storage_device_now(device_id):
+        device = db.session.get(StorageDevice, device_id)
+        if not device:
+            abort(404, description=f"Storage device {device_id} not found")
+        from storage_devices.storage_poller import _storage_engine_instance
+        if _storage_engine_instance:
+            _storage_engine_instance.poll_one(device_id)
+        return jsonify({"status": "queued"})
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -549,7 +625,13 @@ if __name__ == "__main__":
     _set_engine_instance(engine)
     engine.start()
 
+    from storage_devices.storage_poller import StoragePollingEngine, _set_storage_engine_instance
+    storage_engine = StoragePollingEngine(app, redfish_cfg)
+    _set_storage_engine_instance(storage_engine)
+    storage_engine.start()
+
     host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", "5000"))
     logger.info("Listening on http://%s:%d", host, port)
     socketio.run(app, host=host, port=port, debug=app.config.get("DEBUG", False))
+
