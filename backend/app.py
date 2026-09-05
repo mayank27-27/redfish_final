@@ -539,6 +539,24 @@ def _register_routes(app: Flask, socketio: SocketIO):
         db.session.add(device)
         db.session.commit()
         return jsonify(device.to_dict()), 201
+    
+    @app.route("/api/storage-devices/<device_id>", methods=["PATCH"])
+    def update_storage_device(device_id):
+        device = db.session.get(StorageDevice, device_id)
+        if not device:
+            abort(404, description=f"Storage device {device_id} not found")
+        data = request.get_json(force=True) or {}
+        cipher = get_cipher(app.config)
+        if "hostname" in data:           device.hostname = data["hostname"]
+        if "display_name" in data:       device.display_name = data["display_name"]
+        if "ip_address" in data:         device.ip_address = data["ip_address"]
+        if "username" in data:           device.username = data["username"]
+        if "password" in data:           device.password_encrypted = cipher.encrypt(data["password"]) if data["password"] else None
+        if "polling_interval_seconds" in data:
+            device.polling_interval_seconds = int(data["polling_interval_seconds"])
+        if "enabled" in data:            device.enabled = bool(data["enabled"])
+        db.session.commit()
+        return jsonify(device.to_dict())
 
     @app.route("/api/storage-devices/<device_id>", methods=["GET"])
     def get_storage_device(device_id):

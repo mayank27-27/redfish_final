@@ -160,6 +160,7 @@ let state = {
   alertsFilter: "all",               // 'all' | 'critical' | 'warning' | 'info'
   storageDevices: [],
   selectedStorageDeviceId: null,
+  storageDevicesFilter: { search: "", tab: "all" },
 };
 
 const SEVERITY_ORDER = ["critical", "warning", "info"];
@@ -557,7 +558,7 @@ async function loadStorageDevices() {
   state.storageDevices = await api("/api/storage-devices");
   const countEl = $("#navStorageDeviceCount");
   if (countEl) countEl.textContent = state.storageDevices.length || "";
-  if (state.view === "storage-devices" && !state.selectedStorageDeviceId) updateStorageDevicesTable();
+  if (state.view === "storage-devices") updateStorageDevicesTable();
 }
 
 function renderStorageDevicesView() {
@@ -571,8 +572,9 @@ function renderStorageDevicesView() {
       <button class="btn-primary" id="addStorageDeviceBtn"><i class="fa-solid fa-plus"></i> Add storage device</button>
     </div>
     <div class="nodes-toolbar">
-      <input type="text" id="storageDeviceSearch" placeholder="Search by name or IP address..." autocomplete="off">
+      <input type="text" id="storageDeviceSearch" placeholder="Search by name or IP address..." autocomplete="off" value="${escapeHtml(state.storageDevicesFilter.search)}">
     </div>
+    <div class="filter-tabs" id="storageDeviceFilterTabs"></div>
     <div class="nodes-table">
       <div class="nodes-table-head">
         <span>Status</span><span>Node</span><span>Vendor / Model</span>
@@ -582,22 +584,56 @@ function renderStorageDevicesView() {
     </div>
   `;
   $("#addStorageDeviceBtn").addEventListener("click", () => openAddStorageDeviceModal());
-  $("#storageDeviceSearch").addEventListener("input", () => updateStorageDevicesTable());
+  $("#storageDeviceSearch").addEventListener("input", (e) => {
+    state.storageDevicesFilter.search = e.target.value;
+    updateStorageDevicesTable();
+  });
   updateStorageDevicesTable();
 }
 
 function updateStorageDevicesTable() {
   if (state.view !== "storage-devices") return;
-  const search = ($("#storageDeviceSearch")?.value || "").toLowerCase();
-  const filtered = state.storageDevices.filter((d) =>
+  const counts = { all: state.storageDevices.length, ok: 0, warn: 0, crit: 0, unreachable: 0 };
+  for (const d of state.storageDevices) {
+    const b = healthBucket(d.health_status);
+    if (b === "ok") counts.ok++;
+    else if (b === "warn") counts.warn++;
+    else if (b === "crit") counts.crit++;
+    if (d.connection_status === "unreachable" || d.connection_status === "auth_failed") counts.unreachable++;
+  }
+
+  const tabs = [
+    ["all", `All (${counts.all})`],
+    ["crit", `Critical (${counts.crit})`],
+    ["warn", `Warning (${counts.warn})`],
+    ["ok", `Healthy (${counts.ok})`],
+    ["unreachable", `Unreachable (${counts.unreachable})`],
+  ];
+  const tabsEl = $("#storageDeviceFilterTabs");
+  tabsEl.innerHTML = tabs.map(([key, label]) =>
+    `<button class="filter-tab${state.storageDevicesFilter.tab === key ? " active" : ""}" data-tab="${key}">${label}</button>`
+  ).join("");
+  $all(".filter-tab", tabsEl).forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.storageDevicesFilter.tab = btn.dataset.tab;
+      updateStorageDevicesTable();
+    });
+  });
+
+  const search = state.storageDevicesFilter.search.toLowerCase();
+  let filtered = state.storageDevices.filter((d) =>
     ((d.display_name || d.hostname || "") + " " + (d.ip_address || "")).toLowerCase().includes(search)
   );
+  if (state.storageDevicesFilter.tab === "crit") filtered = filtered.filter((d) => healthBucket(d.health_status) === "crit");
+  else if (state.storageDevicesFilter.tab === "warn") filtered = filtered.filter((d) => healthBucket(d.health_status) === "warn");
+  else if (state.storageDevicesFilter.tab === "ok") filtered = filtered.filter((d) => healthBucket(d.health_status) === "ok");
+  else if (state.storageDevicesFilter.tab === "unreachable") filtered = filtered.filter((d) => d.connection_status === "unreachable" || d.connection_status === "auth_failed");
 
   $("#storageDevicesSubCount").textContent = `${filtered.length} of ${state.storageDevices.length} devices shown`;
 
   const body = $("#storageDevicesTableBody");
   if (filtered.length === 0) {
-    body.innerHTML = `<div class="sidebar-empty">No storage devices ${state.storageDevices.length ? "match your search" : 'yet. Click "Add storage device" to add one.'}</div>`;
+    body.innerHTML = `<div class="sidebar-empty">No storage devices ${state.storageDevices.length ? "match your search/filter" : 'yet. Click "Add storage device" to add one.'}</div>`;
     return;
   }
   body.innerHTML = "";
@@ -653,6 +689,10 @@ async function renderStorageDeviceDetail() {
       </div>
       <span class="pill ${healthClass(device.health_status)}"><span class="dot" style="background:${healthDotColor(device.health_status)}"></span>${device.health_status || "Unknown"}</span>
       <span class="pill ${device.connection_status === 'connected' ? 'pill-ok' : 'pill-crit'}"><span class="dot" style="background:${connDotColor(device.connection_status)}"></span>${formatConnectionStatus(device.connection_status)}</span>
+      <div class="header-actions">
+        <button class="btn-secondary" id="editStorageDeviceBtn"><i class="fa-solid fa-pen-to-square"></i> Edit</button>
+        <button class="btn-secondary" id="pollStorageDeviceBtn"><i class="fa-solid fa-rotate"></i> Poll now</button>
+      </div>
     </div>
     <div class="header-stats">
       <div class="stat"><div class="label">Firmware</div><div class="value">${escapeHtml(device.firmware_version || "-")}</div></div>
@@ -661,8 +701,10 @@ async function renderStorageDeviceDetail() {
       <div class="stat"><div class="label">Last Updated</div><div class="value">${device.last_successful_poll ? timeAgoOrLocal(device.last_successful_poll) : "never"}</div></div>
     </div>
   `;
+  $("#editStorageDeviceBtn").addEventListener("click", () => openEditStorageDeviceModal(device));
+  $("#pollStorageDeviceBtn").addEventListener("click", () => pollStorageDeviceNow(device.id));
 
-    const STORAGE_CATEGORY_META = {
+  const STORAGE_CATEGORY_META = {
     storage_device_disk:       { icon: "fa-hard-drive", label: "Disks" },
     storage_device_controller: { icon: "fa-microchip",  label: "Controllers" },
     storage_device_power:      { icon: "fa-plug",        label: "Power" },
@@ -713,8 +755,35 @@ function openAddStorageDeviceModal() {
     body: JSON.stringify({ hostname, ip_address, username, password }),
   }).then(() => {
     loadStorageDevices();
-    updateStorageDevicesTable();
   }).catch((e) => toast(`Failed to add storage device: ${e.message || e}`));
+}
+
+function openEditStorageDeviceModal(device) {
+  const hostname = prompt("Hostname / display name:", device.display_name || device.hostname);
+  if (hostname === null) return;
+  const ip_address = prompt("IP address:", device.ip_address);
+  if (ip_address === null) return;
+  const username = prompt("Username (leave blank to keep unchanged):", "");
+  const password = prompt("Password (leave blank to keep unchanged, or type a new one):", "");
+
+  const payload = { hostname, display_name: hostname, ip_address };
+  if (username) payload.username = username;
+  if (password) payload.password = password;
+
+  api(`/api/storage-devices/${device.id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  }).then(() => {
+    toast("Storage device updated");
+    renderStorageDeviceDetail();
+    loadStorageDevices();
+  }).catch((e) => toast(`Failed to update storage device: ${e.message || e}`));
+}
+
+function pollStorageDeviceNow(deviceId) {
+  api(`/api/storage-devices/${deviceId}/poll-now`, { method: "POST" })
+    .then(() => toast("Poll queued - data updates in the background within a few seconds"))
+    .catch((e) => toast(`Failed to trigger poll: ${e.message || e}`));
 }
 
 function timeAgoOrLocal(isoString) {
