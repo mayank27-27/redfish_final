@@ -39,8 +39,13 @@
       </div>
       <div class="nav-item" data-view="nodes">
         <i class="fa-solid fa-server"></i>
-        <span>Nodes</span>
+        <span>Compute Servers</span>
         <span class="nav-count" id="navNodeCount"></span>
+      </div>
+      <div class="nav-item" data-view="storage_nodes">
+        <i class="fa-solid fa-database"></i>
+        <span>Storage Devices</span>
+        <span class="nav-count" id="navStorageCount"></span>
       </div>
       <div class="nav-item" data-view="alerts">
         <i class="fa-solid fa-triangle-exclamation"></i>
@@ -66,28 +71,35 @@
 <!-- Add server modal -->
 <div class="modal-overlay" id="addServerModal">
   <div class="modal">
-    <h2><i class="fa-solid fa-plus-circle" style="color:var(--accent);margin-right:8px;font-size:16px;"></i>Add Server</h2>
+    <h2><i class="fa-solid fa-plus-circle" style="color:var(--accent);margin-right:8px;font-size:16px;"></i>Add Device</h2>
+    <div class="field">
+      <label>Device Category / Type</label>
+      <select id="f_device_type" style="width:100%; background:var(--panel-alt); border:1px solid var(--border); color:var(--text-bright); border-radius:var(--radius-md); padding:8px; outline:none;">
+        <option value="server">Server / Compute Node</option>
+        <option value="storage">Storage Device / SAN Array (e.g. HPE MSA)</option>
+      </select>
+    </div>
     <div class="field">
       <label>Hostname / Display name</label>
-      <input id="f_hostname" placeholder="web-node-042" autocomplete="off">
+      <input id="f_hostname" placeholder="msa2040-san-01" autocomplete="off">
     </div>
     <div class="field">
-      <label>BMC IP address</label>
-      <input id="f_ip" placeholder="192.168.1.100" autocomplete="off">
+      <label>Management IP address</label>
+      <input id="f_ip" placeholder="192.168.2.214" autocomplete="off">
     </div>
     <div class="field">
-      <label>BMC Username (Optional if using Agent)</label>
-      <input id="f_username" placeholder="root" autocomplete="off">
+      <label>Management Username (Optional if using Agent)</label>
+      <input id="f_username" placeholder="manage" autocomplete="off">
     </div>
     <div class="field">
-      <label>BMC Password (Optional if using Agent)</label>
+      <label>Management Password (Optional if using Agent)</label>
       <input id="f_password" type="password" autocomplete="new-password">
     </div>
     <div class="field">
       <label>Management Protocol</label>
       <select id="f_protocol" style="width:100%; background:var(--panel-alt); border:1px solid var(--border); color:var(--text-bright); border-radius:var(--radius-md); padding:8px; outline:none;">
-        <option value="redfish">NaviConnect</option>
-        <option value="ilo2">NaviBypass (for older servers)</option>
+        <option value="redfish">Redfish API (Standard)</option>
+        <option value="ilo2">NaviBypass (Legacy)</option>
       </select>
     </div>
     <div class="field">
@@ -141,10 +153,17 @@
       <input id="e_password" type="password" autocomplete="new-password" placeholder="••••••••">
     </div>
     <div class="field">
+      <label>Device Category / Type</label>
+      <select id="e_device_type" style="width:100%; background:var(--panel-alt); border:1px solid var(--border); color:var(--text-bright); border-radius:var(--radius-md); padding:8px; outline:none;">
+        <option value="server">Server / Compute Node</option>
+        <option value="storage">Storage Device / SAN Array</option>
+      </select>
+    </div>
+    <div class="field">
       <label>Management Protocol</label>
       <select id="e_protocol" style="width:100%; background:var(--panel-alt); border:1px solid var(--border); color:var(--text-bright); border-radius:var(--radius-md); padding:8px; outline:none;">
-        <option value="redfish">NaviConnect</option>
-        <option value="ilo2">NaviBypass (for older servers)</option>
+        <option value="redfish">Redfish API (Standard)</option>
+        <option value="ilo2">NaviBypass (Legacy)</option>
       </select>
     </div>
     <div class="field">

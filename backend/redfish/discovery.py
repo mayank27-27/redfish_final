@@ -103,6 +103,8 @@ SYSTEM_LINK_KEYS = {
     "Memory": "memory",
     "Storage": "storage",
     "SimpleStorage": "simple_storage",
+    "StoragePools": "storage_pools",
+    "StorageControllers": "storage_controllers",
     "EthernetInterfaces": "ethernet_interfaces",
     "NetworkInterfaces": "network_interfaces",
     "LogServices": "log_services",
@@ -212,6 +214,8 @@ def discover_topology(client) -> dict:
         "systems": [],
         "chassis": [],
         "managers": [],
+        "storage_services": [],
+        "storage_pools": [],
         "update_service": _odata_id(service_root.get("UpdateService")),
         "event_service": _odata_id(service_root.get("EventService")),
         "task_service": _odata_id(service_root.get("Tasks")) or _odata_id(service_root.get("TaskService")),
@@ -219,6 +223,7 @@ def discover_topology(client) -> dict:
         "per_system": {},
         "per_chassis": {},
         "per_manager": {},
+        "per_storage": {},
     }
 
     systems_uri = _odata_id(service_root.get("Systems"))
@@ -232,6 +237,29 @@ def discover_topology(client) -> dict:
     managers_uri = _odata_id(service_root.get("Managers"))
     if managers_uri:
         topology["managers"] = _collection_members(client.get(managers_uri))
+
+    # Top-level storage collections (MSA 2040 / Redfish Storage Services)
+    storage_root_uri = _odata_id(service_root.get("Storage")) or _odata_id(service_root.get("StorageServices"))
+    if storage_root_uri:
+        topology["storage_services"] = _collection_members(client.get(storage_root_uri))
+        if not topology["storage_services"] and _probe_uri(client, storage_root_uri):
+            topology["storage_services"] = [storage_root_uri]
+
+    pools_root_uri = _odata_id(service_root.get("StoragePools"))
+    if pools_root_uri:
+        topology["storage_pools"] = _collection_members(client.get(pools_root_uri))
+
+    # Inspect each top-level storage resource
+    for st_uri in topology["storage_services"]:
+        body = client.get(st_uri)
+        if not body:
+            continue
+        st_links = {}
+        for k in ("Drives", "StorageControllers", "Controllers", "Volumes", "StoragePools", "Enclosures"):
+            u = _href_or_odata(body, k)
+            if u:
+                st_links[k.lower()] = u
+        topology["per_storage"][st_uri] = st_links
 
     for system_uri in topology["systems"]:
         body = client.get(system_uri)

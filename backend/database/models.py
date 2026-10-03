@@ -111,6 +111,8 @@ class ComponentCategory(str, enum.Enum):
     STORAGE_CONTROLLER= "storage_controller"
     STORAGE_DRIVE     = "storage_drive"
     STORAGE_VOLUME    = "storage_volume"
+    STORAGE_POOL      = "storage_pool"
+    STORAGE_ENCLOSURE = "storage_enclosure"
     POWER_SUPPLY      = "power"
     THERMAL_SENSOR    = "thermal"
     VOLTAGE_SENSOR    = "voltage"
@@ -200,6 +202,7 @@ class Server(db.Model):
     customer_location = Column(String(255), nullable=True)
     maintenance_records = Column(Text, nullable=True)
     management_protocol = Column(String(50), default="redfish", nullable=False)
+    device_type         = Column(String(64), default="server", nullable=False)
 
     # ── BMC credentials (optional for agent-polled servers) ─────────────
     username           = Column(String(128), nullable=True)
@@ -267,6 +270,7 @@ class Server(db.Model):
             "customer_location": self.customer_location,
             "maintenance_records": self.maintenance_records,
             "management_protocol": self.management_protocol,
+            "device_type": self.device_type or "server",
         }
 
     def to_dict(self):

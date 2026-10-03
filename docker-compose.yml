@@ -10,7 +10,7 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U redfish -d redfishmonitor"]
       interval: 5s
@@ -36,7 +36,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "5000:5000"
+      - "127.0.0.1:5000:5000"
 
     # ── Load every variable from backend/.env ─────────────────────────────
     # env_file makes Docker Compose read the file and inject every line as

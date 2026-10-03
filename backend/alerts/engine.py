@@ -104,13 +104,63 @@ def evaluate_components(db_session, server_id, category: str, components: list[d
         still_present.add(alert.dedupe_key)
 
         # Category-specific extra conditions beyond raw Status.Health.
-        raw = c.get("raw_json", {})
-        if c["category"] == ComponentCategory.STORAGE_DRIVE:
-            if raw.get("FailurePredicted"):
+        raw = c.get("raw_json") or c.get("properties") or {}
+        comp_cat = c.get("category") or category
+        if comp_cat in (ComponentCategory.STORAGE_DRIVE, "storage_drive"):
+            if raw.get("FailurePredicted") or raw.get("predictive_failure"):
                 cond = "failure_predicted"
                 a = _raise_or_bump(
                     db_session, server_id, category, AlertSeverity.CRITICAL,
                     f"{name}: drive failure predicted (SMART)", c.get("odata_id"), cond, new_critical,
+                )
+                still_present.add(a.dedupe_key)
+            state_val = str(c.get("state") or "").lower()
+            if "fail" in state_val or "fault" in state_val:
+                cond = "drive_failed"
+                a = _raise_or_bump(
+                    db_session, server_id, category, AlertSeverity.CRITICAL,
+                    f"{name}: drive failed (State={c.get('state')})", c.get("odata_id"), cond, new_critical,
+                )
+                still_present.add(a.dedupe_key)
+
+        if comp_cat in (ComponentCategory.STORAGE_POOL, "storage_pool"):
+            state_val = str(c.get("state") or "").lower()
+            if health in ("Warning", "Critical") or "degraded" in state_val or "fault" in state_val:
+                cond = "storage_pool_degraded"
+                sev = AlertSeverity.CRITICAL if health == "Critical" else AlertSeverity.WARNING
+                a = _raise_or_bump(
+                    db_session, server_id, category, sev,
+                    f"Storage Pool {name} degraded or unhealthy (Health={health})", c.get("odata_id"), cond, new_critical,
+                )
+                still_present.add(a.dedupe_key)
+
+        if c["category"] == ComponentCategory.STORAGE_CONTROLLER:
+            if health in ("Warning", "Critical"):
+                cond = "controller_failed"
+                sev = AlertSeverity.CRITICAL if health == "Critical" else AlertSeverity.WARNING
+                a = _raise_or_bump(
+                    db_session, server_id, category, sev,
+                    f"Storage Controller {name} reported health '{health}'", c.get("odata_id"), cond, new_critical,
+                )
+                still_present.add(a.dedupe_key)
+
+        if c["category"] == ComponentCategory.STORAGE_VOLUME:
+            if health in ("Warning", "Critical"):
+                cond = "volume_degraded"
+                sev = AlertSeverity.CRITICAL if health == "Critical" else AlertSeverity.WARNING
+                a = _raise_or_bump(
+                    db_session, server_id, category, sev,
+                    f"Storage Volume {name} degraded or unavailable (Health={health})", c.get("odata_id"), cond, new_critical,
+                )
+                still_present.add(a.dedupe_key)
+
+        if c["category"] == ComponentCategory.STORAGE_ENCLOSURE:
+            if health in ("Warning", "Critical"):
+                cond = "enclosure_unhealthy"
+                sev = AlertSeverity.CRITICAL if health == "Critical" else AlertSeverity.WARNING
+                a = _raise_or_bump(
+                    db_session, server_id, category, sev,
+                    f"Enclosure {name} reported health '{health}'", c.get("odata_id"), cond, new_critical,
                 )
                 still_present.add(a.dedupe_key)
 

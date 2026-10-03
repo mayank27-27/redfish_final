@@ -59,13 +59,17 @@ def _build_message(config, alert, server) -> MIMEMultipart:
 def send_critical_alert_email(config, alert, server=None):
     """Best-effort send. Swallows and logs every failure - a mail
     outage must never break polling or alert evaluation."""
-    if not config.get("SMTP_ENABLED", False):
+    if not config:
+        return False
+    smtp_enabled = config.get("SMTP_ENABLED", False) if isinstance(config, dict) else getattr(config, "SMTP_ENABLED", False)
+    if not smtp_enabled:
         logger.debug(
             "Email alerts disabled (SMTP_USERNAME/SMTP_PASSWORD not set) - "
             "skipping ticket email for alert %s", alert.id,
         )
         return False
-    if not config.get("ALERT_EMAIL_TO"):
+    alert_to = config.get("ALERT_EMAIL_TO") if isinstance(config, dict) else getattr(config, "ALERT_EMAIL_TO", "")
+    if not alert_to:
         logger.warning("SMTP is configured but ALERT_EMAIL_TO is empty - skipping ticket email for alert %s", alert.id)
         return False
 

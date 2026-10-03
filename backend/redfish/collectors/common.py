@@ -10,7 +10,7 @@ repeating boilerplate for pulling Status.Health/State out of a resource.
 def status_health(resource: dict) -> str | None:
     status = resource.get("Status")
     if isinstance(status, dict):
-        return status.get("Health")
+        return status.get("Health") or status.get("HealthRollup")
     return None
 
 

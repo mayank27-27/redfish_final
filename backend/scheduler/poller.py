@@ -45,6 +45,24 @@ def _set_engine_instance(engine):
     _polling_engine_instance = engine
 
 
+def _normalize_health_status(val: str | None) -> HealthStatus | None:
+    if not val:
+        return None
+    s = str(val).strip().lower()
+    if s in ("ok", "good", "normal"):
+        return HealthStatus.OK
+    if s in ("warning", "warn", "degraded", "non-critical"):
+        return HealthStatus.WARNING
+    if s in ("critical", "crit", "failed", "error", "fatal"):
+        return HealthStatus.CRITICAL
+    if s in ("unknown", "unavailable"):
+        return HealthStatus.UNKNOWN
+    try:
+        return HealthStatus(val)
+    except ValueError:
+        return None
+
+
 class PollingEngine:
     def __init__(self, app, socketio, config=None):
         """
@@ -150,28 +168,53 @@ class PollingEngine:
         self.executor.submit(self._poll_server_safe, server_id)
 
     def _poll_server_safe(self, server_id: str):
-        """Wrapper that catches all exceptions so a broken server never kills
-        the thread pool worker."""
+        """Wrapper that catches all exceptions so a broken or deleted server
+        never kills the thread pool worker."""
+        from sqlalchemy.orm.exc import ObjectDeletedError
+        from sqlalchemy.exc import InvalidRequestError
+
+        server_id_str = str(server_id)
         try:
             with self.app.app_context():
                 try:
-                    self._poll_server(server_id)
+                    self._poll_server(server_id_str)
+                except (ObjectDeletedError, InvalidRequestError):
+                    logger.warning("Server %s was deleted during poll operation; aborting poll cycle.", server_id_str)
                 except Exception:
-                    logger.exception("Unhandled error polling server %s", server_id)
+                    logger.exception("Unhandled error polling server %s", server_id_str)
         finally:
             with self._active_polls_lock:
-                self._active_polls.discard(str(server_id))
+                self._active_polls.discard(server_id_str)
 
     # -- core poll cycle ---------------------------------------------------
 
     def _poll_server(self, server_id: str):
-        server = db.session.get(Server, server_id)
+        from sqlalchemy.orm.exc import ObjectDeletedError
+        from sqlalchemy.exc import InvalidRequestError
+
+        server_id_str = str(server_id)
+        server = db.session.get(Server, server_id_str)
         if not server or not server.enabled:
+            return
+
+        try:
+            hostname = server.hostname or server_id_str
+            ip_address = server.ip_address or "unknown"
+            username = server.username
+            management_protocol = server.management_protocol
+            password_encrypted = server.password_encrypted
+        except (ObjectDeletedError, InvalidRequestError):
+            logger.warning("Server %s was deleted prior to poll start", server_id_str)
             return
 
         server.last_poll_attempt = datetime.utcnow()
         db.session.add(server)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except (ObjectDeletedError, InvalidRequestError):
+            db.session.rollback()
+            logger.warning("Server %s was deleted during poll start initialization", server_id_str)
+            return
 
         # Decrypt BMC password. Provide a clear error if the key is wrong.
         if not server.password_encrypted:
@@ -184,25 +227,21 @@ class PollingEngine:
 
         cipher = get_cipher(self.config)
         try:
-            password = cipher.decrypt(server.password_encrypted)
+            password = cipher.decrypt(password_encrypted)
         except ValueError as exc:
             msg = (
-                f"Cannot decrypt BMC password for {server.hostname} ({server.ip_address}). "
+                f"Cannot decrypt BMC password for {hostname} ({ip_address}). "
                 f"This usually means ENCRYPTION_KEY changed since the server was added. "
                 f"Re-add the server via the UI to store its password with the current key. "
                 f"Detail: {exc}"
             )
             logger.error(msg)
-            server.connection_status = ConnectionStatus.AUTH_FAILED
-            server.last_poll_error = "Decryption failed — ENCRYPTION_KEY may have changed. Re-add this server."
-            db.session.add(server)
-            db.session.commit()
-            ws_events.emit_server_summary_update(self.socketio, server.to_summary_dict())
+            self._mark_connection(server, ConnectionStatus.AUTH_FAILED, "Decryption failed — ENCRYPTION_KEY may have changed. Re-add this server.", server_id_str=server_id_str)
             return
 
-        if server.management_protocol == "ilo2":
+        if management_protocol == "ilo2":
             from redfish.ilo2_client import ILO2Client
-            client = ILO2Client(server.ip_address, server.username, password, self.config)
+            client = ILO2Client(ip_address, username, password, self.config)
             topology = {
                 "service_root": {"RedfishVersion": "1.0.0"},
                 "systems": ["/redfish/v1/Systems/1"],
@@ -229,34 +268,42 @@ class PollingEngine:
                     }
                 }
             }
-            alert_engine.resolve_connection_alerts(db.session, server.id, "auth_failed")
-            alert_engine.resolve_connection_alerts(db.session, server.id, "unreachable")
+            alert_engine.resolve_connection_alerts(db.session, server_id_str, "auth_failed")
+            alert_engine.resolve_connection_alerts(db.session, server_id_str, "unreachable")
         else:
-            base_url = f"https://{server.ip_address}"
-            redfish_session = self.session_manager.get_session(server.id, base_url, server.username, password)
+            base_url = f"https://{ip_address}"
+            redfish_session = self.session_manager.get_session(server_id_str, base_url, username, password)
             client = RedfishClient(redfish_session, self.config)
 
             try:
                 topology = self._get_topology(client, server)
             except RedfishAuthError:
-                self._mark_connection(server, ConnectionStatus.AUTH_FAILED, "Authentication failed")
-                alert_engine.raise_connection_alert(
-                    db.session, server.id, alert_engine.AlertSeverity.CRITICAL,
-                    f"Authentication failed for {server.hostname} ({server.ip_address})", "auth_failed",
-                    config=self.config, server=server,
-                )
+                self._mark_connection(server, ConnectionStatus.AUTH_FAILED, "Authentication failed", server_id_str=server_id_str)
+                try:
+                    if db.session.get(Server, server_id_str):
+                        alert_engine.raise_connection_alert(
+                            db.session, server_id_str, alert_engine.AlertSeverity.CRITICAL,
+                            f"Authentication failed for {hostname} ({ip_address})", "auth_failed",
+                            config=self.config, server=server,
+                        )
+                except (ObjectDeletedError, InvalidRequestError):
+                    pass
                 return
             except RedfishUnreachableError as exc:
-                self._mark_connection(server, ConnectionStatus.UNREACHABLE, str(exc))
-                alert_engine.raise_connection_alert(
-                    db.session, server.id, alert_engine.AlertSeverity.CRITICAL,
-                    f"{server.hostname} ({server.ip_address}) unreachable: {exc}", "unreachable",
-                    config=self.config, server=server,
-                )
+                self._mark_connection(server, ConnectionStatus.UNREACHABLE, str(exc), server_id_str=server_id_str)
+                try:
+                    if db.session.get(Server, server_id_str):
+                        alert_engine.raise_connection_alert(
+                            db.session, server_id_str, alert_engine.AlertSeverity.CRITICAL,
+                            f"{hostname} ({ip_address}) unreachable: {exc}", "unreachable",
+                            config=self.config, server=server,
+                        )
+                except (ObjectDeletedError, InvalidRequestError):
+                    pass
                 return
 
-            alert_engine.resolve_connection_alerts(db.session, server.id, "auth_failed")
-            alert_engine.resolve_connection_alerts(db.session, server.id, "unreachable")
+            alert_engine.resolve_connection_alerts(db.session, server_id_str, "auth_failed")
+            alert_engine.resolve_connection_alerts(db.session, server_id_str, "unreachable")
 
         is_idrac7 = (topology.get("idrac_generation") == "idrac7")
         if topology.get("idrac_generation") == "idrac6":
@@ -482,7 +529,8 @@ class PollingEngine:
 
     def _upsert_components(self, server, category_name, components):
         collector_db_categories = {
-            "storage": ["storage_controller", "storage_drive", "storage_volume"],
+            "storage": ["storage_controller", "storage_drive", "storage_volume", "storage_pool"],
+            "enclosure": ["storage_enclosure"],
             "pcie_devices": ["pcie"],
             "logs": [],
         }
@@ -569,37 +617,59 @@ class PollingEngine:
             db.session.commit()
         return new_entries
 
-    def _mark_connection(self, server, status: ConnectionStatus, error_msg: str = ""):
+    def _mark_connection(self, server, status: ConnectionStatus, error_msg: str = "", server_id_str: str = None):
         from sqlalchemy.orm.exc import ObjectDeletedError
         from sqlalchemy.exc import InvalidRequestError
+
+        if not server_id_str:
+            try:
+                server_id_str = str(getattr(server, "id", "unknown"))
+            except (ObjectDeletedError, InvalidRequestError):
+                server_id_str = "unknown"
+
         try:
-            server.connection_status = status
-            server.last_poll_error = error_msg
-            db.session.add(server)
+            target_server = None
+            if server_id_str != "unknown":
+                target_server = db.session.get(Server, server_id_str)
+            if not target_server:
+                logger.warning("Server %s was deleted during poll, discarding connection status update.", server_id_str)
+                return
+
+            target_server.connection_status = status
+            target_server.last_poll_error = error_msg
+            db.session.add(target_server)
             db.session.commit()
-            ws_events.emit_server_summary_update(self.socketio, server.to_summary_dict())
+            summary = target_server.to_summary_dict()
+            ws_events.emit_server_summary_update(self.socketio, summary)
         except (ObjectDeletedError, InvalidRequestError):
             db.session.rollback()
-            logger.warning("Server %s was deleted during poll, discarding connection status update.", getattr(server, 'id', 'unknown'))
+            logger.warning("Server %s was deleted during poll, discarding connection status update.", server_id_str)
         except Exception as exc:
             db.session.rollback()
-            logger.error("Failed to mark connection status for server: %s", exc)
+            logger.error("Failed to mark connection status for server %s: %s", server_id_str, exc)
 
     def _recompute_server_summary(self, server):
         server.connection_status = ConnectionStatus.CONNECTED
         server.last_successful_poll = datetime.utcnow()
         server.last_poll_error = None
+
+        components = Component.query.filter_by(server_id=server.id).all()
         worst = HealthStatus.OK
         order = [HealthStatus.OK, HealthStatus.WARNING, HealthStatus.CRITICAL]
-        for c in Component.query.filter_by(server_id=server.id).all():
+
+        for c in components:
             if not c.health:
                 continue
-            try:
-                h = HealthStatus(c.health)
+            h = _normalize_health_status(c.health)
+            if h and h in order:
                 if order.index(h) > order.index(worst):
                     worst = h
-            except ValueError:
-                continue
+
+        if not components:
+            existing = _normalize_health_status(server.health_status)
+            if existing:
+                worst = existing
+
         server.health_status = worst
         db.session.add(server)
 

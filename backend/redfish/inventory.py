@@ -126,9 +126,34 @@ def refresh_inventory(client, server_row, db_session):
         if power_state:
             server_row.power_state = power_state
 
-        status = system_body.get("Status", {})
-        if status.get("Health"):
-            server_row.health_status = status.get("Health")
+        status = system_body.get("Status", {}) if isinstance(system_body.get("Status"), dict) else {}
+        health = status.get("Health") or status.get("HealthRollup")
+        if health:
+            server_row.health_status = health
+
+    # Fallback identity & health from chassis / service root / storage for SAN storage devices
+    if chassis_body:
+        if not server_row.model:
+            server_row.model = chassis_body.get("Model")
+        if not server_row.health_status or server_row.health_status == "Unknown":
+            c_status = chassis_body.get("Status", {}) if isinstance(chassis_body.get("Status"), dict) else {}
+            c_health = c_status.get("Health") or c_status.get("HealthRollup")
+            if c_health:
+                server_row.health_status = c_health
+    if not server_row.serial_number and chassis_body:
+        server_row.serial_number = chassis_body.get("SerialNumber")
+    if not server_row.vendor and service_root.get("Vendor"):
+        server_row.vendor = service_root.get("Vendor")
+
+    # Device type detection: automatically classify as 'storage' if model/vendor indicates MSA/SAN or if top-level storage services exist
+    if not server_row.device_type or server_row.device_type == "server":
+        model_str = (server_row.model or "").lower()
+        vendor_str = (server_row.vendor or "").lower()
+        if any(kw in model_str or kw in vendor_str for kw in ("msa", "storage", "san", "powervaunt", "storeonce", "array")) or (
+            topology.get("storage_services") and not topology.get("systems")
+        ):
+            server_row.device_type = "storage"
+            logger.info("Auto-detected device_type as 'storage' for %s (model=%s, vendor=%s)", server_row.hostname, server_row.model, server_row.vendor)
 
     if manager_body:
         server_row.firmware_version = manager_body.get("FirmwareVersion")

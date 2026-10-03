@@ -8,7 +8,7 @@ Production-grade server hardware monitoring platform that communicates with serv
 
 ```
 Browser ──WebSocket/REST──> Flask Backend
-                                │
+                                |
                           APScheduler
                                 │
                          RedfishClient

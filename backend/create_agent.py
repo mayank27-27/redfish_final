@@ -45,11 +45,25 @@ def list_servers():
             print(f"Name: {s.display_name or s.hostname} | IP: {s.ip_address} | Server ID: {s.id}")
         print("-------------------------\n")
 
+def generate_enrollment_key():
+    """Generate an enrollment key and its hash for .env configuration."""
+    raw_key = secrets.token_hex(32)
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    print(f"\n✅ Enrollment key generated!")
+    print("-" * 60)
+    print(f"Enrollment Key (share with customers):  {raw_key}")
+    print(f"Enrollment Key Hash (put in .env):      {key_hash}")
+    print("-" * 60)
+    print(f"\nAdd this to your backend/.env file:")
+    print(f"ENROLLMENT_KEY_HASH={key_hash}")
+    print(f"\n⚠️  Share the Enrollment Key (not the hash) with customers.\n")
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage:")
         print("  python create_agent.py --create <agent_name>")
         print("  python create_agent.py --list-servers")
+        print("  python create_agent.py --gen-enrollment-key")
         sys.exit(1)
 
     action = sys.argv[1]
@@ -57,5 +71,7 @@ if __name__ == "__main__":
         create_agent(sys.argv[2])
     elif action == "--list-servers":
         list_servers()
+    elif action == "--gen-enrollment-key":
+        generate_enrollment_key()
     else:
         print("Invalid arguments.")

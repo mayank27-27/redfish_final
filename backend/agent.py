@@ -56,6 +56,10 @@ logger = logging.getLogger("agent")
 CONFIG_PATH = Path("agent_config.json")
 QUEUE_DB_PATH = Path("agent_queue.db")
 
+# Default Central Server URL — baked into the agent so customers
+# do not need to enter it manually.  Can be overridden in agent_config.json.
+DEFAULT_CENTRAL_SERVER_URL = "https://navifix.in"
+
 
 # ---------------------------------------------------------------------------
 # Lightweight config dict with attribute access
@@ -143,6 +147,11 @@ class CollectorAgent:
 
     def __init__(self):
         self.load_config()
+
+        # Auto-enroll if no agent token exists yet
+        if not self.config.get("AGENT_TOKEN"):
+            self.enroll()
+
         self._db_lock = threading.Lock()   # serialize ALL SQLite access
         self.init_db()
         self.scheduler = BackgroundScheduler(daemon=True)
@@ -178,9 +187,12 @@ class CollectorAgent:
     def load_config(self):
         if not CONFIG_PATH.exists():
             default_config = {
-                "AGENT_TOKEN": "your-agent-token-here",
-                "CENTRAL_SERVER_URL": "http://localhost:5000",
-                "CENTRAL_SERVER_VERIFY_TLS": False,
+                "ENROLLMENT_KEY": "paste-enrollment-key-from-company",
+                "AGENT_NAME": "CustomerName-SiteName",
+                "CUSTOMER_NAME": "",
+                "CUSTOMER_LOCATION": "",
+                "CENTRAL_SERVER_URL": DEFAULT_CENTRAL_SERVER_URL,
+                "CENTRAL_SERVER_VERIFY_TLS": True,
                 "REDFISH_VERIFY_TLS": False,
                 "REDFISH_HTTP_TIMEOUT": 30,
                 "REDFISH_MAX_RETRIES": 3,
@@ -190,22 +202,93 @@ class CollectorAgent:
                 "INVENTORY_REFRESH_INTERVAL_SECONDS": 3600,
                 "DEVICES": [
                     {
-                        "server_id": "paste-server-id-from-central",
                         "ip_address": "192.168.1.100",
                         "username": "root",
-                        "password": "calvin",
+                        "password": "password",
+                        "hostname": "server-01",
                     }
                 ],
             }
             CONFIG_PATH.write_text(json.dumps(default_config, indent=2))
-            # Use info, not error — this is expected first-run behaviour.
             logger.info(
-                "Created default agent_config.json — edit it with your real values and restart."
+                "Created default agent_config.json — edit it with your "
+                "enrollment key and BMC device details, then restart."
             )
             exit(1)
 
         with open(CONFIG_PATH) as f:
             self.config = json.load(f)
+
+        # Apply default Central Server URL if not in config
+        if "CENTRAL_SERVER_URL" not in self.config or not self.config["CENTRAL_SERVER_URL"]:
+            self.config["CENTRAL_SERVER_URL"] = DEFAULT_CENTRAL_SERVER_URL
+
+    # -----------------------------------------------------------------------
+    # Auto-enrollment
+    # -----------------------------------------------------------------------
+
+    def enroll(self):
+        """Register this agent with the Central Server.
+
+        Sends the enrollment key + device list to POST /api/agents/enroll.
+        On success, saves the returned agent_token and server_id mappings
+        back into agent_config.json so subsequent runs skip enrollment.
+        """
+        enrollment_key = self.config.get("ENROLLMENT_KEY", "")
+        if not enrollment_key or enrollment_key == "paste-enrollment-key-from-company":
+            logger.error(
+                "ENROLLMENT_KEY is not set in agent_config.json. "
+                "Get the enrollment key from the company and paste it in."
+            )
+            exit(1)
+
+        base_url = self.config.get("CENTRAL_SERVER_URL", DEFAULT_CENTRAL_SERVER_URL)
+        url = f"{base_url.rstrip('/')}/api/agents/enroll"
+        verify_tls = self.config.get("CENTRAL_SERVER_VERIFY_TLS", True)
+
+        payload = {
+            "enrollment_key": enrollment_key,
+            "agent_name": self.config.get("AGENT_NAME", ""),
+            "customer_name": self.config.get("CUSTOMER_NAME", ""),
+            "customer_location": self.config.get("CUSTOMER_LOCATION", ""),
+            "devices": self.config.get("DEVICES", []),
+        }
+
+        logger.info("Enrolling with Central Server at %s ...", base_url)
+        try:
+            resp = httpx.post(url, json=payload, verify=verify_tls, timeout=30)
+        except Exception as exc:
+            logger.error("Failed to reach Central Server for enrollment: %s", exc)
+            logger.error("Check CENTRAL_SERVER_URL and network connectivity.")
+            exit(1)
+
+        if resp.status_code == 201:
+            result = resp.json()
+            logger.info("✅ Enrollment successful! Agent ID: %s", result["agent_id"])
+
+            # Save token and server_id mappings back to config
+            self.config["AGENT_TOKEN"] = result["agent_token"]
+            self.config["AGENT_ID"] = result["agent_id"]
+
+            # Update DEVICES with server_ids from the Central Server
+            returned_devices = {d["ip_address"]: d["server_id"] for d in result.get("devices", [])}
+            for dev in self.config.get("DEVICES", []):
+                ip = dev.get("ip_address", "")
+                if ip in returned_devices:
+                    dev["server_id"] = returned_devices[ip]
+
+            # Persist updated config
+            CONFIG_PATH.write_text(json.dumps(self.config, indent=2))
+            logger.info("Updated agent_config.json with token and server IDs.")
+        elif resp.status_code == 409:
+            logger.error("Agent name '%s' is already registered. Use a unique AGENT_NAME.", self.config.get("AGENT_NAME"))
+            exit(1)
+        elif resp.status_code == 403:
+            logger.error("Invalid enrollment key. Check ENROLLMENT_KEY in agent_config.json.")
+            exit(1)
+        else:
+            logger.error("Enrollment failed: %s %s", resp.status_code, resp.text[:500])
+            exit(1)
 
     # -----------------------------------------------------------------------
     # SQLite queue  (ALL methods acquire self._db_lock before touching self.conn)
@@ -346,6 +429,26 @@ class CollectorAgent:
             ).rowcount
         if deleted:
             logger.info("Pruned %d stale queue entries older than %ds.", deleted, self.QUEUE_MAX_AGE_SECONDS)
+
+    def send_heartbeat(self):
+        """Send a lightweight heartbeat to the Central Server."""
+        token = self.config.get("AGENT_TOKEN")
+        if not token:
+            return
+        base_url = self.config.get("CENTRAL_SERVER_URL", DEFAULT_CENTRAL_SERVER_URL)
+        url = f"{base_url.rstrip('/')}/api/agents/heartbeat"
+        verify_tls = self.config.get("CENTRAL_SERVER_VERIFY_TLS", False)
+        try:
+            resp = httpx.post(
+                url,
+                headers={"X-Agent-Token": token},
+                verify=verify_tls,
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                logger.debug("Heartbeat returned %d", resp.status_code)
+        except Exception as exc:
+            logger.debug("Heartbeat failed: %s", exc)
 
     # -----------------------------------------------------------------------
     # Topology / inventory
@@ -517,6 +620,16 @@ class CollectorAgent:
             minutes=15,
             id="prune_queue",
             max_instances=1,
+        )
+
+        # Heartbeat — let Central Server know we are alive even when
+        # there is no telemetry to push (e.g., all BMCs are down).
+        self.scheduler.add_job(
+            self.send_heartbeat,
+            "interval",
+            seconds=60,
+            id="heartbeat",
+            replace_existing=True,
         )
 
         self.scheduler.start()

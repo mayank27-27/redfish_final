@@ -47,6 +47,8 @@ load_dotenv()  # reads backend/.env (or wherever the process cwd is)
 
 import logging
 import os
+import hashlib
+import secrets
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -199,6 +201,10 @@ def _register_routes(app: Flask, socketio: SocketIO):
         if management_protocol not in ["redfish", "ilo2"]:
             return jsonify({"error": "Invalid management protocol"}), 400
 
+        device_type = data.get("device_type", "server")
+        if device_type not in ["server", "storage"]:
+            return jsonify({"error": "Invalid device_type (must be 'server' or 'storage')"}), 400
+
         cipher = get_cipher(app.config)
         server = Server(
             hostname=data["hostname"],
@@ -213,7 +219,8 @@ def _register_routes(app: Flask, socketio: SocketIO):
             customer_name=data.get("customer_name"),
             customer_location=data.get("customer_location"),
             maintenance_records=data.get("maintenance_records"),
-            management_protocol=management_protocol
+            management_protocol=management_protocol,
+            device_type=device_type,
         )
         db.session.add(server)
         db.session.commit()
@@ -237,6 +244,11 @@ def _register_routes(app: Flask, socketio: SocketIO):
         if "customer_name" in data:         server.customer_name = data["customer_name"]
         if "customer_location" in data:     server.customer_location = data["customer_location"]
         if "maintenance_records" in data:   server.maintenance_records = data["maintenance_records"]
+        if "device_type" in data:
+            if data["device_type"] in ["server", "storage"]:
+                server.device_type = data["device_type"]
+            else:
+                return jsonify({"error": "Invalid device_type"}), 400
         if "management_protocol" in data:
             val = data["management_protocol"]
             if val not in ["redfish", "ilo2"]:
@@ -434,6 +446,155 @@ def _register_routes(app: Flask, socketio: SocketIO):
     def health():
         return jsonify({"status": "ok", "timestamp": datetime.utcnow().isoformat()})
 
+
+    # ── Agent Enrollment ─────────────────────────────────────────────────
+    @app.route("/api/agents/enroll", methods=["POST"])
+    def enroll_agent():
+        """Self-registration endpoint for remote agents.
+
+        The agent sends an enrollment_key (shared secret from the company),
+        its name, customer details, and list of BMC devices. The server
+        creates the Agent + Site + Server records and returns a unique
+        bearer token + server_id mappings so the agent can start pushing
+        telemetry immediately.
+        """
+        enrollment_key_hash = app.config.get("ENROLLMENT_KEY_HASH") or app.config["REDFISH_CONFIG"].get("ENROLLMENT_KEY_HASH", "")
+        if not enrollment_key_hash:
+            return jsonify({"error": "Agent enrollment is not configured on this server"}), 503
+
+        data = request.get_json(force=True) or {}
+        enrollment_key = data.get("enrollment_key", "")
+        if not enrollment_key:
+            return jsonify({"error": "enrollment_key is required"}), 400
+
+        # Verify enrollment key
+        provided_hash = hashlib.sha256(enrollment_key.encode()).hexdigest()
+        if provided_hash != enrollment_key_hash:
+            return jsonify({"error": "Invalid enrollment key"}), 403
+
+        agent_name = data.get("agent_name", "").strip()
+        if not agent_name:
+            return jsonify({"error": "agent_name is required"}), 400
+
+        # Check for duplicate agent name
+        if Agent.query.filter_by(name=agent_name).first():
+            return jsonify({"error": f"Agent '{agent_name}' already exists"}), 409
+
+        customer_name = data.get("customer_name", "").strip()
+        customer_location = data.get("customer_location", "").strip()
+        devices = data.get("devices", [])
+
+        if not devices:
+            return jsonify({"error": "At least one device is required in 'devices'"}), 400
+
+        # Create Site (if customer info provided)
+        site = None
+        site_name = customer_name or agent_name
+        existing_site = Site.query.filter_by(name=site_name).first()
+        if existing_site:
+            site = existing_site
+        else:
+            site = Site(
+                name=site_name,
+                description=f"{customer_location}" if customer_location else None,
+            )
+            db.session.add(site)
+            db.session.flush()  # get site.id
+
+        # Generate agent token (same mechanism as create_agent.py)
+        raw_token = secrets.token_hex(32)
+        token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+        agent = Agent(
+            name=agent_name,
+            api_key_hash=token_hash,
+            site_id=site.id,
+            health_status="Enrolled",
+        )
+        db.session.add(agent)
+        db.session.flush()  # get agent.id
+
+        # Create Server records for each device
+        created_devices = []
+        cipher = get_cipher(app.config)
+        for dev in devices:
+            ip = dev.get("ip_address", "").strip()
+            if not ip:
+                continue
+
+            # Skip if server with this IP already exists
+            existing = Server.query.filter_by(ip_address=ip).first()
+            if existing:
+                # Re-assign to this agent if not already assigned
+                if not existing.agent_id:
+                    existing.agent_id = agent.id
+                    existing.site_id = site.id
+                    existing.customer_name = customer_name or existing.customer_name
+                    existing.customer_location = customer_location or existing.customer_location
+                created_devices.append({
+                    "server_id": str(existing.id),
+                    "ip_address": ip,
+                    "hostname": existing.hostname,
+                    "status": "existing",
+                })
+                continue
+
+            hostname = dev.get("hostname", "").strip() or ip
+            server = Server(
+                hostname=hostname,
+                display_name=hostname,
+                ip_address=ip,
+                username=dev.get("username"),
+                password_encrypted=cipher.encrypt(dev["password"]) if dev.get("password") else None,
+                polling_interval_seconds=int(dev.get("polling_interval_seconds", 30)),
+                enabled=True,
+                site_id=site.id,
+                agent_id=agent.id,
+                customer_name=customer_name,
+                customer_location=customer_location,
+            )
+            db.session.add(server)
+            db.session.flush()
+            created_devices.append({
+                "server_id": str(server.id),
+                "ip_address": ip,
+                "hostname": hostname,
+                "status": "created",
+            })
+
+        db.session.commit()
+        logger.info("Agent '%s' enrolled successfully with %d device(s)", agent_name, len(created_devices))
+
+        return jsonify({
+            "agent_id": str(agent.id),
+            "agent_token": raw_token,
+            "site_id": str(site.id),
+            "devices": created_devices,
+        }), 201
+
+    # ── Agent Heartbeat ──────────────────────────────────────────────────
+    @app.route("/api/agents/heartbeat", methods=["POST"])
+    def agent_heartbeat():
+        """Lightweight liveness endpoint for agents.
+
+        Agents call this periodically so the Central Server can track
+        online/offline status even when there is no telemetry to push.
+        """
+        agent_token = request.headers.get("X-Agent-Token")
+        if not agent_token:
+            return jsonify({"error": "Missing X-Agent-Token"}), 401
+
+        token_hash = hashlib.sha256(agent_token.encode()).hexdigest()
+        agent = Agent.query.filter_by(api_key_hash=token_hash).first()
+        if not agent:
+            return jsonify({"error": "Invalid X-Agent-Token"}), 403
+
+        agent.last_seen_at = datetime.utcnow()
+        agent.health_status = "OK"
+        db.session.commit()
+
+        return jsonify({"status": "ok", "agent_id": str(agent.id)}), 200
+
     # ── Agent Ingestion ───────────────────────────────────────────────────
     @app.route("/api/ingest/telemetry", methods=["POST"])
     def ingest_telemetry():
@@ -441,8 +602,7 @@ def _register_routes(app: Flask, socketio: SocketIO):
         if not agent_token:
             return jsonify({"error": "Missing X-Agent-Token"}), 401
         
-        from database.models import Agent, ConnectionStatus
-        import hashlib
+        from database.models import ConnectionStatus
         token_hash = hashlib.sha256(agent_token.encode()).hexdigest()
         agent = Agent.query.filter_by(api_key_hash=token_hash).first()
         if not agent:
@@ -597,6 +757,34 @@ def _register_routes(app: Flask, socketio: SocketIO):
         if _storage_engine_instance:
             _storage_engine_instance.poll_one(device_id)
         return jsonify({"status": "queued"})
+
+    @app.route("/api/servers/<server_id>/diagnostics/redfish-tree", methods=["GET"])
+    def get_redfish_tree(server_id):
+        server = _get_server_or_404(server_id)
+        cipher = get_cipher(app.config)
+        try:
+            password = cipher.decrypt(server.password_encrypted) if server.password_encrypted else None
+        except Exception:
+            return jsonify({"error": "Failed to decrypt stored credentials"}), 500
+
+        from scheduler.poller import _polling_engine_instance
+        from redfish.client import RedfishClient
+        from diagnostics.redfish_explorer import explore_redfish
+        base_url = f"https://{server.ip_address}"
+        try:
+            if _polling_engine_instance and getattr(_polling_engine_instance, "session_manager", None):
+                session = _polling_engine_instance.session_manager.get_session(server.id, base_url, server.username or "", password or "")
+                cfg = _polling_engine_instance.config
+            else:
+                from redfish.session import RedfishSessionManager
+                cfg = app.config.get("REDFISH_CONFIG")
+                session_mgr = RedfishSessionManager(cfg)
+                session = session_mgr.get_session(server.id, base_url, server.username or "", password or "")
+            client = RedfishClient(session, cfg)
+            tree = explore_redfish(client)
+            return jsonify(tree)
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 502
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -141,6 +141,8 @@ def build_app_config() -> AppConfig:
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
         SQLALCHEMY_ENGINE_OPTIONS={
             "pool_pre_ping": True,
+        } if db_url.startswith("sqlite") else {
+            "pool_pre_ping": True,
             "pool_size": 10,
             "max_overflow": 20,
         },
@@ -186,6 +188,9 @@ def build_app_config() -> AppConfig:
 
         # CORS
         CORS_ALLOWED_ORIGINS=env.get("CORS_ALLOWED_ORIGINS", "*"),
+
+        # Agent enrollment
+        ENROLLMENT_KEY_HASH=env.get("ENROLLMENT_KEY_HASH", ""),
     )
 
     _log_startup_summary(cfg)
@@ -243,6 +248,7 @@ def _log_startup_summary(cfg: AppConfig):
         "  Inventory refresh:  %ss\n"
         "  SocketIO mode:      %s\n"
         "  Email alerts:       %s\n"
+        "  Enrollment key:     %s\n"
         "═══════════════════════════════════════════════════════",
         safe_db,
         "SET (44 chars)" if cfg.ENCRYPTION_KEY else "NOT SET (temp key)",
@@ -255,6 +261,7 @@ def _log_startup_summary(cfg: AppConfig):
         cfg.SOCKETIO_ASYNC_MODE,
         f"ENABLED (critical alerts -> {cfg.ALERT_EMAIL_TO})" if cfg.SMTP_ENABLED
             else "DISABLED (set SMTP_USERNAME/SMTP_PASSWORD in .env)",
+        "SET" if cfg.ENROLLMENT_KEY_HASH else "NOT SET (agent enrollment disabled)",
     )
 
 

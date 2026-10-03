@@ -7,19 +7,21 @@
  */
 
 const CATEGORY_META = {
-  battery:   { icon: "fa-car-battery",        label: "Battery" },
-  chassis:   { icon: "fa-cube",               label: "Chassis" },
-  fans:      { icon: "fa-fan",                label: "Fans" },
-  memory:    { icon: "fa-memory",             label: "Memory" },
-  processor: { icon: "fa-microchip",          label: "Processor" },
-  storage:   { icon: "fa-database",           label: "Storage" },
-  power:     { icon: "fa-plug",               label: "Power" },
-  thermal:   { icon: "fa-temperature-half",   label: "Thermal" },
-  voltage:   { icon: "fa-bolt",               label: "Voltage" },
-  network:   { icon: "fa-network-wired",      label: "Network" },
-  pcie:      { icon: "fa-layer-group",        label: "PCI / Cables" },
-  firmware:  { icon: "fa-code-branch",        label: "Firmware" },
-  security:  { icon: "fa-shield-halved",      label: "Security" },
+  battery:           { icon: "fa-car-battery",        label: "Battery" },
+  chassis:           { icon: "fa-cube",               label: "Chassis" },
+  fans:              { icon: "fa-fan",                label: "Fans" },
+  memory:            { icon: "fa-memory",             label: "Memory" },
+  processor:         { icon: "fa-microchip",          label: "Processor" },
+  storage:           { icon: "fa-database",           label: "Storage" },
+  storage_pool:      { icon: "fa-cubes-stacked",      label: "Storage Pools" },
+  storage_enclosure: { icon: "fa-box",                label: "Enclosures" },
+  power:             { icon: "fa-plug",               label: "Power" },
+  thermal:           { icon: "fa-temperature-half",   label: "Thermal" },
+  voltage:           { icon: "fa-bolt",               label: "Voltage" },
+  network:           { icon: "fa-network-wired",      label: "Network" },
+  pcie:              { icon: "fa-layer-group",        label: "PCI / Cables" },
+  firmware:          { icon: "fa-code-branch",        label: "Firmware" },
+  security:          { icon: "fa-shield-halved",      label: "Security" },
 };
 const CATEGORY_ORDER = Object.keys(CATEGORY_META);
 // ---------------------------------------------------------------------
@@ -183,6 +185,7 @@ function openEditServerModal(server) {
   $("#e_display_name").value = server.display_name || server.hostname;
   $("#e_username").value = server.username || "";
   $("#e_password").value = "";
+  if ($("#e_device_type")) $("#e_device_type").value = server.device_type || "server";
   $("#e_protocol").value = server.management_protocol || "redfish";
   $("#e_site_id").value = server.site_id || "";
   $("#e_agent_id").value = server.agent_id || "";
@@ -204,6 +207,7 @@ function wireEditServerModal() {
     const payload = {
       display_name: $("#e_display_name").value.trim(),
       username: $("#e_username").value.trim(),
+      device_type: $("#e_device_type") ? $("#e_device_type").value : "server",
       management_protocol: $("#e_protocol").value,
       polling_interval_seconds: parseInt($("#e_interval").value, 10) || 30,
       customer_name: $("#e_customer_name").value.trim(),
@@ -307,12 +311,16 @@ async function loadServers() {
   state.servers = await api("/api/servers");
   renderNavCounts();
   if (state.view === "overview") renderOverviewView();
-  if (state.view === "nodes") updateNodesTable();
+  if (state.view === "nodes" || state.view === "storage_nodes") updateNodesTable();
 }
 
 function renderNavCounts() {
+  const computeServers = state.servers.filter(s => s.device_type !== "storage");
+  const storageDevices = state.servers.filter(s => s.device_type === "storage");
   const nodeCountEl = $("#navNodeCount");
-  if (nodeCountEl) nodeCountEl.textContent = state.servers.length || "";
+  if (nodeCountEl) nodeCountEl.textContent = computeServers.length || "";
+  const storageCountEl = $("#navStorageCount");
+  if (storageCountEl) storageCountEl.textContent = storageDevices.length || "";
 }
 
 function healthBucket(healthStatus) {
@@ -326,10 +334,6 @@ function healthBucket(healthStatus) {
 // View router
 // ---------------------------------------------------------------------
 function setView(view) {
-  if (state.view !== "server" && view !== "server" && state.selectedServerId) {
-    // leaving a server detail view (not just switching within it) - stop
-    // getting live component updates for a server we're no longer looking at
-  }
   if (view !== "server" && state.selectedServerId) {
     socket.emit("unsubscribe_server", { server_id: state.selectedServerId });
     state.selectedServerId = null;
@@ -338,7 +342,7 @@ function setView(view) {
   state.view = view;
   $all(".nav-item").forEach((el) => el.classList.toggle("active", el.dataset.view === view));
   if (view === "overview") renderOverviewView();
-  else if (view === "nodes") renderNodesView();
+  else if (view === "nodes" || view === "storage_nodes") renderNodesView();
   else if (view === "alerts") renderAlertsView();
   else if (view === "storage-devices") renderStorageDevicesView();
 }
@@ -354,6 +358,9 @@ function wireNav() {
 // ---------------------------------------------------------------------
 function renderOverviewView() {
   const main = $("#main");
+  const computeServers = state.servers.filter(s => s.device_type !== "storage");
+  const storageDevices = state.servers.filter(s => s.device_type === "storage");
+
   const counts = { ok: 0, warn: 0, crit: 0, unknown: 0 };
   for (const s of state.servers) counts[healthBucket(s.health_status)]++;
 
@@ -371,11 +378,11 @@ function renderOverviewView() {
     <div class="view-header">
       <div>
         <h1>Fleet Overview</h1>
-        <div class="sub">${state.servers.length} node${state.servers.length === 1 ? "" : "s"} monitored</div>
+        <div class="sub">${computeServers.length} compute server${computeServers.length === 1 ? "" : "s"} &middot; ${storageDevices.length} storage array${storageDevices.length === 1 ? "" : "s"} monitored</div>
       </div>
     </div>
     <div class="stats-strip">
-      <div class="stat-card"><div class="label">Total Nodes</div><div class="value">${state.servers.length}</div></div>
+      <div class="stat-card"><div class="label">Total Devices</div><div class="value">${state.servers.length}</div></div>
       <div class="stat-card ok"><div class="label">Healthy</div><div class="value">${counts.ok}</div></div>
       <div class="stat-card warn"><div class="label">Warning</div><div class="value">${counts.warn}</div></div>
       <div class="stat-card crit"><div class="label">Critical</div><div class="value">${counts.crit}</div></div>
@@ -389,7 +396,7 @@ function renderOverviewView() {
         <div class="panel-box-body" id="overviewAlertsPreview"></div>
       </div>
       <div class="panel-box">
-        <div class="panel-box-header"><span>Vendor Health</span></div>
+        <div class="panel-box-header"><span>Vendor & Device Health</span></div>
         <div class="panel-box-body" id="overviewVendorMatrix"></div>
       </div>
     </div>
@@ -434,10 +441,10 @@ function renderOverviewView() {
       card.innerHTML = `
         <div class="vendor-card-top">
           <span class="name">${escapeHtml(name)}</span>
-          <span class="count">${servers.length} node${servers.length === 1 ? "" : "s"}</span>
+          <span class="count">${servers.length} device${servers.length === 1 ? "" : "s"}</span>
         </div>
         <div class="health-bar">
-          ${servers.map((s) => `<span class="seg ${healthBucket(s.health_status)}" title="${escapeHtml(s.display_name || s.hostname)}"></span>`).join("")}
+          ${servers.map((s) => `<span class="seg ${healthBucket(s.health_status)}" title="${escapeHtml(s.display_name || s.hostname)} (${s.device_type || 'server'})"></span>`).join("")}
         </div>
         <div class="vendor-card-counts">
           <span><span class="dot" style="background:var(--ok)"></span>${c.ok}</span>
@@ -451,17 +458,18 @@ function renderOverviewView() {
 }
 
 // ---------------------------------------------------------------------
-// Nodes page (replaces the old always-visible sidebar server list)
+// Nodes page (Compute Servers vs Storage Devices views)
 // ---------------------------------------------------------------------
 function renderNodesView() {
+  const isStorageView = (state.view === "storage_nodes");
   const main = $("#main");
   main.innerHTML = `
     <div class="view-header">
       <div>
-        <h1>Nodes</h1>
+        <h1>${isStorageView ? '<i class="fa-solid fa-database" style="color:var(--accent);margin-right:8px;"></i>Storage Devices (SAN / NAS)' : '<i class="fa-solid fa-server" style="color:var(--accent);margin-right:8px;"></i>Compute Servers'}</h1>
         <div class="sub" id="nodesSubCount"></div>
       </div>
-      <button class="btn-primary" id="addServerBtn"><i class="fa-solid fa-plus"></i> Add server</button>
+      <button class="btn-primary" id="addServerBtn"><i class="fa-solid fa-plus"></i> Add ${isStorageView ? 'storage device' : 'server'}</button>
     </div>
     <div class="nodes-toolbar">
       <input type="text" id="nodeSearch" placeholder="Search by name or IP address..." autocomplete="off" value="${escapeHtml(state.nodesFilter.search)}">
@@ -469,13 +477,16 @@ function renderNodesView() {
     <div class="filter-tabs" id="nodeFilterTabs"></div>
     <div class="nodes-table">
       <div class="nodes-table-head">
-        <span>Status</span><span>Node</span><span>Vendor / Model</span>
-        <span>Power</span><span>Connection</span><span>Last Updated</span>
+        <span>Status</span><span>${isStorageView ? 'Storage Array' : 'Server'}</span><span>Vendor / Model</span>
+        <span>Type</span><span>Connection</span><span>Last Updated</span>
       </div>
       <div id="nodesTableBody"></div>
     </div>
   `;
-  $("#addServerBtn").addEventListener("click", () => $("#addServerModal").classList.add("open"));
+  $("#addServerBtn").addEventListener("click", () => {
+    if ($("#f_device_type")) $("#f_device_type").value = isStorageView ? "storage" : "server";
+    $("#addServerModal").classList.add("open");
+  });
   $("#nodeSearch").addEventListener("input", (e) => {
     state.nodesFilter.search = e.target.value;
     updateNodesTable();
@@ -484,9 +495,13 @@ function renderNodesView() {
 }
 
 function updateNodesTable() {
-  if (state.view !== "nodes") return;
-  const counts = { all: state.servers.length, ok: 0, warn: 0, crit: 0, unreachable: 0 };
-  for (const s of state.servers) {
+  if (state.view !== "nodes" && state.view !== "storage_nodes") return;
+  const isStorageView = (state.view === "storage_nodes");
+  
+  const pool = state.servers.filter(s => isStorageView ? (s.device_type === "storage") : (s.device_type !== "storage"));
+  
+  const counts = { all: pool.length, ok: 0, warn: 0, crit: 0, unreachable: 0 };
+  for (const s of pool) {
     const b = healthBucket(s.health_status);
     if (b === "ok") counts.ok++;
     else if (b === "warn") counts.warn++;
@@ -513,7 +528,7 @@ function updateNodesTable() {
   });
 
   const search = state.nodesFilter.search.toLowerCase();
-  let filtered = state.servers.filter((s) =>
+  let filtered = pool.filter((s) =>
     ((s.display_name || s.hostname || "") + " " + (s.ip_address || "")).toLowerCase().includes(search)
   );
   if (state.nodesFilter.tab === "crit") filtered = filtered.filter((s) => healthBucket(s.health_status) === "crit");
@@ -521,11 +536,11 @@ function updateNodesTable() {
   else if (state.nodesFilter.tab === "ok") filtered = filtered.filter((s) => healthBucket(s.health_status) === "ok");
   else if (state.nodesFilter.tab === "unreachable") filtered = filtered.filter((s) => s.connection_status === "unreachable" || s.connection_status === "auth_failed");
 
-  $("#nodesSubCount").textContent = `${filtered.length} of ${state.servers.length} nodes shown`;
+  $("#nodesSubCount").textContent = `${filtered.length} of ${pool.length} ${isStorageView ? 'storage devices' : 'servers'} shown`;
 
   const body = $("#nodesTableBody");
   if (filtered.length === 0) {
-    body.innerHTML = `<div class="sidebar-empty">No nodes ${state.servers.length ? "match your search/filter" : "yet. Click \u201cAdd server\u201d to add one."}</div>`;
+    body.innerHTML = `<div class="sidebar-empty">No ${isStorageView ? 'storage devices' : 'servers'} ${pool.length ? "match your search/filter" : "yet. Click \u201cAdd " + (isStorageView ? "storage device" : "server") + "\u201d to add one."}</div>`;
     return;
   }
   body.innerHTML = "";
@@ -542,7 +557,7 @@ function updateNodesTable() {
         <div class="ip">${escapeHtml(s.ip_address)}</div>
       </div>
       <div class="vendor-cell">${escapeHtml(s.vendor || "Unknown")} ${escapeHtml(s.model || "")}</div>
-      <div class="power-cell"><i class="fa-solid ${s.power_state === 'On' ? 'fa-power-off' : 'fa-circle-stop'}"></i> ${escapeHtml(s.power_state || "Unknown")}</div>
+      <div class="power-cell"><span style="font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;background:var(--panel-alt);border:1px solid var(--border);">${s.device_type === 'storage' ? 'STORAGE SAN' : 'COMPUTE'}</span></div>
       <div class="conn-cell"><span class="pill ${s.connection_status === 'connected' ? 'pill-ok' : 'pill-crit'}"><span class="dot" style="background:${connDotColor(s.connection_status)}"></span>${formatConnectionStatus(s.connection_status)}</span></div>
       <div class="updated-cell">${s.last_successful_poll ? timeAgoOrLocal(s.last_successful_poll) : "never"}</div>
     `;
@@ -953,19 +968,21 @@ function renderHeader(server) {
       <div class="header-actions">
         <button class="btn-secondary" id="editServerBtn"><i class="fa-solid fa-pen-to-square"></i> Edit</button>
         <button class="btn-secondary" id="pollNowBtn"><i class="fa-solid fa-rotate"></i> Poll now</button>
+        <button class="btn-secondary" id="redfishTreeBtn"><i class="fa-solid fa-folder-tree"></i> Redfish Tree</button>
         ${supportsDiagnostics ? '<button class="btn-secondary" id="supportBundleBtn"><i class="fa-solid fa-file-zipper"></i> Support bundle</button>' : ''}
       </div>
     </div>
     <div class="header-stats">
       ${server.agent_id ? `<div class="stat"><div class="label">Managed By</div><div class="value">Remote Agent</div></div>` : `<div class="stat"><div class="label">Managed By</div><div class="value">Central Server</div></div>`}
+      <div class="stat"><div class="label">Device Type</div><div class="value" style="text-transform:uppercase;font-weight:700;color:var(--accent);">${escapeHtml(server.device_type || 'server')}</div></div>
       <div class="stat"><div class="label">Firmware</div><div class="value">${escapeHtml(server.firmware_version || "-")}</div></div>
       <div class="stat">
         <div class="label">${identityLabel}</div>
         <div class="value">${escapeHtml(identityValue)}</div>
       </div>
       <div class="stat">
-        <div class="label">Server ID</div>
-        <div class="value" style="user-select:all; font-family:monospace; cursor:pointer;" onclick="navigator.clipboard.writeText('${server.id}');toast('Server ID copied!');" title="Click to copy">${server.id}</div>
+        <div class="label">Device ID</div>
+        <div class="value" style="user-select:all; font-family:monospace; cursor:pointer;" onclick="navigator.clipboard.writeText('${server.id}');toast('ID copied!');" title="Click to copy">${server.id}</div>
       </div>
       <div class="stat"><div class="label">Last Updated</div><div class="value">${lastUpdated}</div></div>
     </div>
@@ -984,6 +1001,18 @@ function renderHeader(server) {
   $("#pollNowBtn").addEventListener("click", async () => {
     await api(`/api/servers/${state.selectedServerId}/poll-now`, { method: "POST" });
     toast("Poll queued");
+  });
+  $("#redfishTreeBtn").addEventListener("click", async () => {
+    try {
+      toast("Fetching Redfish tree discovery...");
+      const tree = await api(`/api/servers/${state.selectedServerId}/diagnostics/redfish-tree`);
+      openCategoryModal("storage");
+      const body = $("#categoryModalBody");
+      body.innerHTML = `<pre style="background:var(--panel-alt);padding:14px;border-radius:8px;border:1px solid var(--border);color:var(--text-bright);font-family:var(--mono);max-height:500px;overflow:auto;">${escapeHtml(JSON.stringify(tree, null, 2))}</pre>`;
+      $("#categoryModalTitle").textContent = `Redfish Resource Tree (${server.hostname})`;
+    } catch (e) {
+      toast(`Failed to fetch Redfish tree: ${e.message}`);
+    }
   });
   if (supportsDiagnostics) {
     $("#supportBundleBtn").addEventListener("click", startSupportBundle);
@@ -1092,12 +1121,121 @@ function buildCustomerCard(server) {
   return card;
 }
 
+function formatBytes(bytes) {
+  if (!bytes || isNaN(bytes) || bytes <= 0) return "0 GB";
+  const gb = bytes / (1024 ** 3);
+  if (gb >= 1000) {
+    return `${(gb / 1024).toFixed(2)} TB`;
+  }
+  return `${gb.toFixed(2)} GB`;
+}
+
+function buildCapacityWidget(componentsByCategory) {
+  const pools = componentsByCategory["storage_pool"] || [];
+  const drives = componentsByCategory["storage_drive"] || [];
+  const volumes = componentsByCategory["storage_volume"] || [];
+
+  let rawTotalBytes = 0;
+  let allocatedBytes = 0;
+  let usedBytes = 0;
+  let freeBytes = 0;
+  let virtualBytes = 0;
+
+  for (const d of drives) {
+    const raw = d.properties || {};
+    const cap = raw.CapacityBytes || (raw.CapacityGB ? raw.CapacityGB * 1e9 : 0);
+    rawTotalBytes += cap;
+  }
+
+  let poolTotalBytes = 0;
+  for (const p of pools) {
+    const raw = p.properties || {};
+    const tot = raw.total_capacity_bytes || 0;
+    const a = raw.allocated_capacity_bytes || 0;
+    const u = raw.used_capacity_bytes || 0;
+    const f = raw.free_capacity_bytes || 0;
+
+    poolTotalBytes += tot;
+    allocatedBytes += a;
+    usedBytes += u;
+    freeBytes += f;
+  }
+
+  for (const v of volumes) {
+    const raw = v.properties || {};
+    const cap = raw.capacity_bytes || raw.CapacityBytes || 0;
+    virtualBytes += cap;
+  }
+
+  if (rawTotalBytes === 0 && poolTotalBytes > 0) {
+    rawTotalBytes = poolTotalBytes;
+  }
+  if (freeBytes === 0 && rawTotalBytes > 0 && allocatedBytes > 0) {
+    freeBytes = Math.max(0, rawTotalBytes - allocatedBytes);
+  }
+
+  const card = document.createElement("div");
+  card.className = "card card-capacity-widget";
+  card.style.gridColumn = "1 / -1";
+  card.style.background = "var(--panel)";
+  card.style.border = "1px solid var(--border)";
+  card.style.borderRadius = "var(--radius-lg)";
+  card.style.padding = "18px";
+  card.style.marginBottom = "18px";
+
+  const percentUsed = rawTotalBytes > 0 ? Math.min(100, Math.round((usedBytes / rawTotalBytes) * 100)) : 0;
+  const percentAlloc = rawTotalBytes > 0 ? Math.min(100, Math.round((allocatedBytes / rawTotalBytes) * 100)) : 0;
+
+  card.innerHTML = `
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;">
+      <div style="font-size:15px; font-weight:700; color:var(--text-bright); display:flex; align-items:center; gap:8px;">
+        <i class="fa-solid fa-chart-pie" style="color:var(--accent);"></i> Storage Capacity & Allocation Breakdown
+      </div>
+      <div style="font-size:12px; color:var(--text-dim);">
+        Physical Array Capacity: <b style="color:var(--text-bright);">${formatBytes(rawTotalBytes)}</b>
+      </div>
+    </div>
+    <div class="capacity-progress-bar" style="height:14px; background:var(--panel-alt); border-radius:7px; overflow:hidden; display:flex; margin-bottom:18px; border:1px solid var(--border);">
+      <div style="width:${percentUsed}%; background:var(--accent); title:Used: ${formatBytes(usedBytes)};"></div>
+      <div style="width:${Math.max(0, percentAlloc - percentUsed)}%; background:var(--warn); opacity:0.8; title:Allocated: ${formatBytes(allocatedBytes)};"></div>
+      <div style="flex:1; background:var(--ok); opacity:0.4; title:Unused Physical: ${formatBytes(freeBytes)};"></div>
+    </div>
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:14px;">
+      <div style="background:var(--panel-alt); padding:12px 14px; border-radius:8px; border:1px solid var(--border);">
+        <div style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--text-dim); margin-bottom:4px;">Physical / Raw Capacity</div>
+        <div style="font-size:18px; font-weight:700; color:var(--text-bright);">${formatBytes(rawTotalBytes)}</div>
+      </div>
+      <div style="background:var(--panel-alt); padding:12px 14px; border-radius:8px; border:1px solid var(--border);">
+        <div style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--accent); margin-bottom:4px;">Allocated Capacity</div>
+        <div style="font-size:18px; font-weight:700; color:var(--accent);">${formatBytes(allocatedBytes)}</div>
+      </div>
+      <div style="background:var(--panel-alt); padding:12px 14px; border-radius:8px; border:1px solid var(--border);">
+        <div style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--warn); margin-bottom:4px;">Used Capacity</div>
+        <div style="font-size:18px; font-weight:700; color:var(--warn);">${formatBytes(usedBytes)}</div>
+      </div>
+      <div style="background:var(--panel-alt); padding:12px 14px; border-radius:8px; border:1px solid var(--border);">
+        <div style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--ok); margin-bottom:4px;">Unused Physical Capacity</div>
+        <div style="font-size:18px; font-weight:700; color:var(--ok);">${formatBytes(freeBytes)}</div>
+      </div>
+      <div style="background:var(--panel-alt); padding:12px 14px; border-radius:8px; border:1px solid var(--border);">
+        <div style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--text-dim); margin-bottom:4px;">Logical / Virtual Capacity</div>
+        <div style="font-size:18px; font-weight:700; color:var(--text-bright);">${formatBytes(virtualBytes)}</div>
+      </div>
+    </div>
+  `;
+  return card;
+}
+
 function renderCards(componentsByCategory, server) {
   const grid = $("#cardsGrid");
   grid.innerHTML = "";
   
   if (server) {
     grid.appendChild(buildCustomerCard(server));
+  }
+
+  if (server && server.device_type === "storage") {
+    grid.appendChild(buildCapacityWidget(componentsByCategory));
   }
 
   for (const category of CATEGORY_ORDER) {
@@ -1720,6 +1858,7 @@ function wireAddServerModal() {
       ip_address: $("#f_ip").value.trim(),
       username: $("#f_username").value.trim(),
       password: $("#f_password").value,
+      device_type: $("#f_device_type") ? $("#f_device_type").value : "server",
       management_protocol: $("#f_protocol").value,
       polling_interval_seconds: parseInt($("#f_interval").value, 10) || 30,
       customer_name: $("#f_customer_name").value.trim(),

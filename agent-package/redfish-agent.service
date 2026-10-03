@@ -1,0 +1,23 @@
+[Unit]
+Description=Redfish Fleet Monitor Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=redfish-agent
+Group=redfish-agent
+WorkingDirectory=/opt/redfish-agent
+ExecStart=/usr/bin/python3 agent.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/redfish-agent
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
